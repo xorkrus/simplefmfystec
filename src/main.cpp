@@ -17,177 +17,11 @@ ESP8266WebServer server(HTTP_PORT);
 // Custom index.html flag
 bool hasCustomIndex = false;
 
-// Base64 encoded 1x1 gray pixel for placeholder (scaled to 300x300 via CSS)
-const char placeholderImg[] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-
-void parseSetupIni(String &ssid, String &pass) {
-  File f = SD.open("/SETUP.INI", "r");
-  if (!f) return;
-  
-  bool inWifi = false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.equalsIgnoreCase("[WIFI]")) { inWifi = true; continue; }
-    if (line.startsWith("[")) inWifi = false;
-    
-    if (inWifi) {
-      if (line.startsWith("SSID=")) ssid = line.substring(5);
-      if (line.startsWith("PASSWORD=")) pass = line.substring(9);
-    }
-  }
-  f.close();
-}
-
-void handleThumbnail() {
-  String path = server.arg("path");
-  if (path.endsWith(".gcode") || path.endsWith(".GCODE")) {
-    String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
-    if (SD.exists(thumbPath)) { server.sendStream(SD.open(thumbPath, "r"), "image/jpeg"); return; }
-    thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
-    if (SD.exists(thumbPath)) { server.sendStream(SD.open(thumbPath, "r"), "image/png"); return; }
-  }
-  
-  if (SD.exists("/logo.jpg")) { server.sendStream(SD.open("/logo.jpg", "r"), "image/jpeg"); return; }
-  if (SD.exists("/logo.png")) { server.sendStream(SD.open("/logo.png", "r"), "image/png"); return; }
-  
-  server.sendHeader("Location", placeholderImg, true);
-  server.send(302, "text/plain", "");
-}
-
-void handleList() {
-  String dir = server.arg("dir");
-  if (dir == "") dir = "/";
-  if (!dir.startsWith("/")) dir = "/" + dir;
-  if (!SD.exists(dir) || !SD.open(dir, "r").isDirectory()) {
-    server.send(400, "application/json", "{\"error\":\"Dir not found\"}");
-    return;
-  }
-
-  String json = "[";
-  File d = SD.open(dir, "r");
-  File f = d.openNextFile();
-  while (f) {
-    if (json != "[") json += ",";
-    json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
-    f = d.openNextFile();
-  }
-  f.close();
-  d.close();
-  json += "]";
-  server.send(200, "application/json", json);
-}
-
-void handleFileAction() {
-  if (server.hasArg("plain") == false) { server.send(400, "text/plain", "No body"); return; }
-  String body = server.arg("plain");
-  
-  String action = server.arg("action");
-  String path1 = server.arg("path1");
-  String path2 = server.arg("path2");
-
-  if (action == "delete") {
-    if (SD.exists(path1)) { SD.remove(path1); server.send(200, "text/plain", "OK"); }
-    else server.send(404, "text/plain", "Not found");
-  } 
-  else if (action == "mkdir") {
-    if (SD.mkdir(path1)) server.send(200, "text/plain", "OK");
-    else server.send(500, "text/plain", "Failed");
-  }
-  else if (action == "rename" || action == "move") {
-    if (SD.exists(path1) && SD.rename(path1, path2)) server.send(200, "text/plain", "OK");
-    else server.send(500, "text/plain", "Failed");
-  } else {
-    server.send(400, "text/plain", "Unknown action");
-  }
-}
-
-void handleDownload() {
-  String path = server.arg("path");
-  if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
-  File download = SD.open(path, "r");
-  String contentType = "application/octet-stream";
-  if (path.endsWith(".html")) contentType = "text/html";
-  else if (path.endsWith(".jpg")) contentType = "image/jpeg";
-  else if (path.endsWith(".png")) contentType = "image/png";
-  server.sendStream(download, contentType, download.size());
-}
-
-void handleUpload() {
-  HTTPUpload& upload = server.upload();
-  static File uploadFile;
-  String path = server.arg("path");
-  if (path == "") path = "/" + upload.filename;
-  else if (!path.endsWith("/")) path += "/";
-  path += upload.filename;
-
-  if (upload.status == UPLOAD_FILE_START) {
-    uploadFile = SD.open(path, "w");
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (uploadFile) uploadFile.close();
-  }
-}
-
-void handleRoot() {
-  if (hasCustomIndex) {
-    File idx = SD.open("/index.html", "r");
-    server.sendStream(idx, "text/html", idx.size());
-  } else {
-    server.send(200, "text/html", fallback_html);
-  }
-}
-
-void setup() {
-  pinMode(LED_PIN, OUTPUT);
-  Serial.begin(115200);
-  delay(1000);
-
-  if (!SD.begin(SD_CS)) {
-    Serial.println("SD Card Mount Failed!");
-    while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); } // Blink fast on error
-  }
-
-  hasCustomIndex = SD.exists("/index.html");
-
-  String ssid = "sd-card-3dp";
-  String pass = "12345678";
-  parseSetupIni(ssid, pass);
-
-  if (ssid != "sd-card-3dp") {
-    WiFi.begin(ssid.c_str(), pass.c_str());
-    int timeout = 20;
-    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
-      delay(500); Serial.print("."); timeout--;
-    }
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.softAP("sd-card-3dp", "12345678");
-    Serial.println("\nStarted AP mode");
-  } else {
-    Serial.println("\nConnected to WiFi!");
-  }
-  
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
-
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/thumb", HTTP_GET, handleThumbnail);
-  server.on("/api/list", HTTP_GET, handleList);
-  server.on("/api/action", HTTP_POST, handleFileAction);
-  server.on("/api/download", HTTP_GET, handleDownload);
-  server.on("/api/upload", HTTP_POST, [](){ server.send(200, "text/plain", "OK"); }, handleUpload);
-  
-  server.begin();
-}
-
-void loop() {
-  server.handleClient();
-}
+// Base64 encoded 1x1 gray pixel for C++ redirect
+const char placeholderImg[] PROGMEM = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 // ==========================================
-// FALLBACK WEB INTERFACE (Optimized for 1MB ESP8285)
+// FALLBACK WEB INTERFACE (Moved to top to fix scope error)
 // ==========================================
 const char fallback_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SD File Manager</title>
@@ -261,7 +95,7 @@ function loadFiles() {
          if (f.name.toLowerCase().endsWith('.gcode')) imgSrc = '/thumb?path=' + fullPath;
          else if (f.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|bmp)$/)) imgSrc = '/api/download?path=' + fullPath;
       } else {
-         imgSrc = placeholder; // folder icon could be here
+         imgSrc = placeholder;
       }
 
       card.innerHTML = `
@@ -360,3 +194,194 @@ loadFiles();
 </script>
 </body></html>
 )rawliteral";
+
+
+void parseSetupIni(String &ssid, String &pass) {
+  File f = SD.open("/SETUP.INI", "r");
+  if (!f) return;
+  
+  bool inWifi = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.equalsIgnoreCase("[WIFI]")) { inWifi = true; continue; }
+    if (line.startsWith("[")) inWifi = false;
+    
+    if (inWifi) {
+      if (line.startsWith("SSID=")) ssid = line.substring(5);
+      if (line.startsWith("PASSWORD=")) pass = line.substring(9);
+    }
+  }
+  f.close();
+}
+
+void handleThumbnail() {
+  String path = server.arg("path");
+  if (path.endsWith(".gcode") || path.endsWith(".GCODE")) {
+    String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
+    if (SD.exists(thumbPath)) {
+      File f = SD.open(thumbPath, "r");
+      server.stream(f, "image/jpeg", f.size());
+      f.close();
+      return;
+    }
+    thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
+    if (SD.exists(thumbPath)) {
+      File f = SD.open(thumbPath, "r");
+      server.stream(f, "image/png", f.size());
+      f.close();
+      return;
+    }
+  }
+  
+  if (SD.exists("/logo.jpg")) {
+    File f = SD.open("/logo.jpg", "r");
+    server.stream(f, "image/jpeg", f.size());
+    f.close();
+    return;
+  }
+  if (SD.exists("/logo.png")) {
+    File f = SD.open("/logo.png", "r");
+    server.stream(f, "image/png", f.size());
+    f.close();
+    return;
+  }
+  
+  server.sendHeader("Location", FPSTR(placeholderImg), true);
+  server.send(302, "text/plain", "");
+}
+
+void handleList() {
+  String dir = server.arg("dir");
+  if (dir == "") dir = "/";
+  if (!dir.startsWith("/")) dir = "/" + dir;
+  
+  File d = SD.open(dir, "r");
+  if (!d || !d.isDirectory()) {
+    if(d) d.close();
+    server.send(400, "application/json", "{\"error\":\"Dir not found\"}");
+    return;
+  }
+
+  String json = "[";
+  File f = d.openNextFile();
+  while (f) {
+    if (json != "[") json += ",";
+    json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
+    f = d.openNextFile();
+  }
+  f.close();
+  d.close();
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void handleFileAction() {
+  String action = server.arg("action");
+  String path1 = server.arg("path1");
+  String path2 = server.arg("path2");
+
+  if (action == "delete") {
+    if (SD.exists(path1)) { SD.remove(path1); server.send(200, "text/plain", "OK"); }
+    else server.send(404, "text/plain", "Not found");
+  } 
+  else if (action == "mkdir") {
+    if (SD.mkdir(path1)) server.send(200, "text/plain", "OK");
+    else server.send(500, "text/plain", "Failed");
+  }
+  else if (action == "rename" || action == "move") {
+    if (SD.exists(path1) && SD.rename(path1, path2)) server.send(200, "text/plain", "OK");
+    else server.send(500, "text/plain", "Failed");
+  } else {
+    server.send(400, "text/plain", "Unknown action");
+  }
+}
+
+void handleDownload() {
+  String path = server.arg("path");
+  if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
+  
+  File download = SD.open(path, "r");
+  String contentType = "application/octet-stream";
+  if (path.endsWith(".html")) contentType = "text/html";
+  else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
+  else if (path.endsWith(".png")) contentType = "image/png";
+  
+  server.stream(download, contentType, download.size());
+  download.close();
+}
+
+void handleUpload() {
+  HTTPUpload& upload = server.upload();
+  static File uploadFile;
+  String path = server.arg("path");
+  if (path == "") path = "/";
+  if (!path.endsWith("/")) path += "/";
+  path += upload.filename;
+
+  if (upload.status == UPLOAD_FILE_START) {
+    uploadFile = SD.open(path, "w");
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (uploadFile) uploadFile.close();
+  }
+}
+
+void handleRoot() {
+  if (hasCustomIndex) {
+    File idx = SD.open("/index.html", "r");
+    server.stream(idx, "text/html", idx.size());
+    idx.close();
+  } else {
+    // send_P используется для строк из PROGMEM, чтобы не забивать оперативную память
+    server.send_P(200, "text/html", fallback_html); 
+  }
+}
+
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  Serial.begin(115200);
+  delay(1000);
+
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD Card Mount Failed!");
+    while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); } // Blink fast on error
+  }
+
+  hasCustomIndex = SD.exists("/index.html");
+
+  String ssid = "sd-card-3dp";
+  String pass = "12345678";
+  parseSetupIni(ssid, pass);
+
+  if (ssid != "sd-card-3dp") {
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int timeout = 20;
+    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+      delay(500); Serial.print("."); timeout--;
+    }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.softAP("sd-card-3dp", "12345678");
+    Serial.println("\nStarted AP mode");
+  } else {
+    Serial.println("\nConnected to WiFi!");
+  }
+  
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/thumb", HTTP_GET, handleThumbnail);
+  server.on("/api/list", HTTP_GET, handleList);
+  server.on("/api/action", HTTP_POST, handleFileAction);
+  server.on("/api/download", HTTP_GET, handleDownload);
+  server.on("/api/upload", HTTP_POST, [](){ server.send(200, "text/plain", "OK"); }, handleUpload);
+  
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+}
