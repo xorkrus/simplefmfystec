@@ -1,6 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <SdFat.h> // Используем SdFat вместо стандартной SD.h
+#include <SdFat.h>
 
 // Pin definitions for FYSETC board
 #define SD_CS 4
@@ -10,7 +10,7 @@
 #define CS_SENSE 5
 #define LED_PIN 2
 
-// Создаем объект sd вместо стандартного SD
+// Объект для работы с SD через SdFat
 SdFat sd;
 
 // Server
@@ -167,7 +167,7 @@ loadFiles();
 
 
 void parseSetupIni(String &ssid, String &pass) {
-  File f = sd.open("/SETUP.INI", "r");
+  FsFile f = sd.open("/SETUP.INI", O_READ);
   if (!f) return;
   
   bool inWifi = false;
@@ -190,25 +190,25 @@ void handleThumbnail() {
   if (path.endsWith(".gcode") || path.endsWith(".GCODE")) {
     String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
     if (sd.exists(thumbPath)) {
-      File f = sd.open(thumbPath, "r");
+      FsFile f = sd.open(thumbPath, O_READ);
       server.stream(f, "image/jpeg", HTTP_GET, f.size());
       f.close(); return;
     }
     thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
     if (sd.exists(thumbPath)) {
-      File f = sd.open(thumbPath, "r");
+      FsFile f = sd.open(thumbPath, O_READ);
       server.stream(f, "image/png", HTTP_GET, f.size());
       f.close(); return;
     }
   }
   
   if (sd.exists("/logo.jpg")) {
-    File f = sd.open("/logo.jpg", "r");
+    FsFile f = sd.open("/logo.jpg", O_READ);
     server.stream(f, "image/jpeg", HTTP_GET, f.size());
     f.close(); return;
   }
   if (sd.exists("/logo.png")) {
-    File f = sd.open("/logo.png", "r");
+    FsFile f = sd.open("/logo.png", O_READ);
     server.stream(f, "image/png", HTTP_GET, f.size());
     f.close(); return;
   }
@@ -222,7 +222,7 @@ void handleList() {
   if (dir == "") dir = "/";
   if (!dir.startsWith("/")) dir = "/" + dir;
   
-  File d = sd.open(dir, "r");
+  FsFile d = sd.open(dir, O_READ);
   if (!d || !d.isDirectory()) {
     if(d) d.close();
     server.send(400, "application/json", "{\"error\":\"Dir not found\"}");
@@ -230,7 +230,7 @@ void handleList() {
   }
 
   String json = "[";
-  File f = d.openNextFile();
+  FsFile f = d.openNextFile();
   while (f) {
     if (json != "[") json += ",";
     json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
@@ -267,7 +267,7 @@ void handleDownload() {
   String path = server.arg("path");
   if (!sd.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
   
-  File download = sd.open(path, "r");
+  FsFile download = sd.open(path, O_READ);
   String contentType = "application/octet-stream";
   if (path.endsWith(".html")) contentType = "text/html";
   else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
@@ -279,14 +279,14 @@ void handleDownload() {
 
 void handleUpload() {
   HTTPUpload& upload = server.upload();
-  static File uploadFile;
+  static FsFile uploadFile;
   String path = server.arg("path");
   if (path == "") path = "/";
   if (!path.endsWith("/")) path += "/";
   path += upload.filename;
 
   if (upload.status == UPLOAD_FILE_START) {
-    uploadFile = sd.open(path, "w");
+    uploadFile = sd.open(path, O_WRITE | O_CREAT);
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
   } else if (upload.status == UPLOAD_FILE_END) {
@@ -296,7 +296,7 @@ void handleUpload() {
 
 void handleRoot() {
   if (hasCustomIndex) {
-    File idx = sd.open("/index.html", "r");
+    FsFile idx = sd.open("/index.html", O_READ);
     server.stream(idx, "text/html", HTTP_GET, idx.size());
     idx.close();
   } else {
@@ -309,7 +309,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // Инициализация через SdFat (как в ESPWebDAV)
+  // Инициализация SdFat
   if (!sd.begin(SD_CS)) {
     Serial.println("SD Card Mount Failed!");
     while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); }
