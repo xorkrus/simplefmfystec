@@ -1,222 +1,366 @@
 #include <Arduino.h>
-#include <WiFi.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <SPI.h>
 #include <SD.h>
-#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
 
-// ============================================================================
-// Настройки сети Wi-Fi
-// ============================================================================
-const char* ssid     = "YOUR_SSID";     // Замените на имя вашей сети
-const char* password = "YOUR_PASSWORD"; // Замените на пароль
+// Распиновка FYSETC SD WIFI
+#define SD_CS     4
+#define MISO_PIN  12
+#define MOSI_PIN  13
+#define SCLK_PIN  14
+#define CS_SENSE  5
+#define LED_PIN   2
 
-// ============================================================================
-// Настройки распиновки FYSETC SD-WiFi
-// ============================================================================
-#define SD_CS_PIN    13
-#define SD_SCK_PIN   14
-#define SD_MISO_PIN  2
-#define SD_MOSI_PIN  15
-#define SD_MUX_PIN   12 
+// Дефолтные настройки
+#define DEFAULT_SSID      "xopkland"
+#define DEFAULT_PASSWORD  "1234567890987654321"
 
-// Создаем объекты SPI и Веб-сервера на порту 80
-SPIClass sdSPI(HSPI);
-AsyncWebServer server(80);
+// Порт сервера
+#define HTTP_PORT 80
 
-// Переменная статуса SD
-bool sdInitialized = false;
+ESP8266WebServer server(HTTP_PORT);
+File fsUploadFile;
 
-// HTML-шаблон веб-интерфейса
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE HTML><html>
+String currentSSID = DEFAULT_SSID;
+String currentPASS = DEFAULT_PASSWORD;
+
+// Fallback HTML/JS Интерфейс (если нет index.html на карте)
+const char fallback_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FYSETC SD-WiFi Manager</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; color: #333; }
-    h2 { color: #0056b3; }
-    .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-    ul { list-style-type: none; padding: 0; }
-    li { padding: 8px 0; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
-    a { color: #007bff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .btn { background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
-    .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 12px; }
-    input[type=file] { margin-bottom: 10px; }
-  </style>
+    <meta charset="UTF-8">
+    <title>SD WIFI 3D Printer</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .dropzone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; cursor: pointer; }
+        .dropzone.dragover { background: #e1f5fe; border-color: #03a9f4; }
+        progress { width: 100%; height: 20px; display: none; margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
+        .thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
+        .btn { padding: 5px 10px; cursor: pointer; margin-right: 5px; }
+        .controls { margin-bottom: 20px; }
+    </style>
 </head>
 <body>
-  <h2>FYSETC SD-WiFi Control Panel</h2>
-  
-  <div class="card">
-    <h3>Загрузить файл на SD-карту</h3>
-    <form method="POST" action="/upload" enctype="multipart/form-data">
-      <input type="file" name="upload" required><br>
-      <input type="submit" value="Загрузить" class="btn">
-    </form>
-  </div>
+    <div class="container">
+        <h2>Файловый менеджер SD WIFI</h2>
+        
+        <div class="controls">
+            <button class="btn" onclick="mkdir()">Создать папку</button>
+            <span id="currentPath" style="font-weight:bold; margin-left:10px;">/</span>
+        </div>
 
-  <div class="card">
-    <h3>Файлы на SD-карте</h3>
-    <div id="file-list">Загрузка списка файлов...</div>
-  </div>
+        <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+            Перетащите файлы сюда или нажмите для выбора
+            <input type="file" id="fileInput" style="display:none" multiple onchange="handleFiles(this.files)">
+            <progress id="progressBar" max="100" value="0"></progress>
+        </div>
 
-<script>
-function loadFiles() {
-  fetch('/list')
-    .then(response => response.json())
-    .then(data => {
-      let html = '<ul>';
-      if(data.length === 0) {
-        html += '<li>Файлы отсутствуют</li>';
-      } else {
-        data.forEach(file => {
-          html += `<li>
-            <span><a href="/download?file=${encodeURIComponent(file.name)}">${file.name}</a> (${(file.size/1024).toFixed(1)} KB)</span>
-            <button class="btn btn-danger" onclick="deleteFile('${file.name}')">Удалить</button>
-          </li>`;
+        <table>
+            <thead>
+                <tr>
+                    <th>Превью</th>
+                    <th>Имя файла</th>
+                    <th>Размер</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody id="fileList"></tbody>
+        </table>
+    </div>
+
+    <script>
+        let currentDir = "/";
+
+        function loadFiles() {
+            fetch(`/api/list?dir=${currentDir}`)
+                .then(res => res.json())
+                .then(data => {
+                    const tbody = document.getElementById('fileList');
+                    tbody.innerHTML = '';
+                    
+                    if (currentDir !== "/") {
+                        const upDir = currentDir.substring(0, currentDir.lastIndexOf('/')) || "/";
+                        tbody.innerHTML += `<tr><td>📁</td><td><a href="#" onclick="changeDir('${upDir}')">..</a></td><td>-</td><td></td></tr>`;
+                    }
+
+                    data.forEach(file => {
+                        const tr = document.createElement('tr');
+                        const thumbHtml = !file.isDir && file.name.endsWith('.gcode') 
+                            ? `<img class="thumb" src="/api/thumb?file=${currentDir === '/' ? '' : currentDir}/${file.name}" alt="thumb">`
+                            : (file.isDir ? '📁' : '📄');
+                        
+                        const actions = file.isDir 
+                            ? `<button class="btn" onclick="del('${file.name}', true)">Удалить</button>`
+                            : `<a class="btn" href="${currentDir === '/' ? '' : currentDir}/${file.name}" download>Скачать</a>
+                               <button class="btn" onclick="rename('${file.name}')">Переименовать</button>
+                               <button class="btn" onclick="move('${file.name}')">Переместить</button>
+                               <button class="btn" onclick="del('${file.name}', false)">Удалить</button>`;
+
+                        const nameHtml = file.isDir 
+                            ? `<a href="#" onclick="changeDir('${currentDir === '/' ? '' : currentDir}/${file.name}')">${file.name}</a>`
+                            : file.name;
+
+                        tr.innerHTML = `<td>${thumbHtml}</td><td>${nameHtml}</td><td>${file.size || '-'}</td><td>${actions}</td>`;
+                        tbody.appendChild(tr);
+                    });
+                });
+        }
+
+        function changeDir(dir) {
+            currentDir = dir;
+            document.getElementById('currentPath').innerText = currentDir;
+            loadFiles();
+        }
+
+        function handleFiles(files) {
+            if (!files.length) return;
+            const file = files[0];
+            const formData = new FormData();
+            formData.append("file", file, (currentDir === '/' ? '' : currentDir) + '/' + file.name);
+
+            const xhr = new XMLHttpRequest();
+            const pb = document.getElementById('progressBar');
+            
+            xhr.upload.addEventListener('progress', e => {
+                if (e.lengthComputable) {
+                    pb.style.display = 'block';
+                    pb.value = (e.loaded / e.total) * 100;
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                pb.style.display = 'none';
+                pb.value = 0;
+                loadFiles();
+            });
+
+            xhr.open('POST', '/api/upload', true);
+            xhr.send(formData);
+        }
+
+        const dropzone = document.getElementById('dropzone');
+        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
         });
-      }
-      html += '</ul>';
-      document.getElementById('file-list').innerHTML = html;
-    });
-}
 
-function deleteFile(filename) {
-  if(confirm('Удалить файл ' + filename + '?')) {
-    fetch('/delete?file=' + encodeURIComponent(filename), { method: 'DELETE' })
-      .then(() => loadFiles());
-  }
-}
+        function del(name, isDir) {
+            if (!confirm(`Удалить ${name}?`)) return;
+            const path = (currentDir === '/' ? '' : currentDir) + '/' + name;
+            fetch(`/api/delete?path=${path}&isDir=${isDir}`, { method: 'POST' }).then(loadFiles);
+        }
 
-loadFiles();
-</script>
+        function rename(oldName) {
+            const newName = prompt("Новое имя файла:", oldName);
+            if (!newName) return;
+            const oldPath = (currentDir === '/' ? '' : currentDir) + '/' + oldName;
+            const newPath = (currentDir === '/' ? '' : currentDir) + '/' + newName;
+            fetch(`/api/rename?old=${oldPath}&new=${newPath}`, { method: 'POST' }).then(loadFiles);
+        }
+
+        function move(name) {
+            const newPath = prompt("Новый путь (например, /folder/file.gcode):", "/" + name);
+            if (!newPath) return;
+            const oldPath = (currentDir === '/' ? '' : currentDir) + '/' + name;
+            fetch(`/api/rename?old=${oldPath}&new=${newPath}`, { method: 'POST' }).then(loadFiles);
+        }
+
+        function mkdir() {
+            const name = prompt("Имя новой папки:");
+            if (!name) return;
+            const path = (currentDir === '/' ? '' : currentDir) + '/' + name;
+            fetch(`/api/mkdir?path=${path}`, { method: 'POST' }).then(loadFiles);
+        }
+
+        window.onload = loadFiles;
+    </script>
 </body>
 </html>
 )rawliteral";
 
-// Инициализация SD-карты
-bool initSDCard() {
-    pinMode(SD_MUX_PIN, OUTPUT);
-    digitalWrite(SD_MUX_PIN, LOW); 
-    delay(100);
-
-    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-
-    if (!SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
-        digitalWrite(SD_MUX_PIN, HIGH);
-        delay(100);
-        if (!SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
-            Serial.println("[SD] Ошибка инициализации!");
-            return false;
+void loadConfig() {
+    if (SD.exists("/SETUP.INI")) {
+        File f = SD.open("/SETUP.INI", FILE_READ);
+        bool inWifiSection = false;
+        while (f.available()) {
+            String line = f.readStringUntil('\n');
+            line.trim();
+            if (line == "[WIFI]") {
+                inWifiSection = true;
+            } else if (inWifiSection && line.startsWith("SSID=")) {
+                currentSSID = line.substring(5);
+            } else if (inWifiSection && line.startsWith("PASSWORD=")) {
+                currentPASS = line.substring(9);
+            } else if (line.startsWith("[")) {
+                inWifiSection = false;
+            }
         }
+        f.close();
+        Serial.println("Config loaded.");
     }
-    Serial.println("[SD] Карточка успешно инициализирована.");
-    return true;
 }
 
-// Настройка эндпоинтов веб-сервера
-void setupWebServer() {
-    // Главная страница
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html", index_html);
-    });
+String getContentType(String filename) {
+    if (filename.endsWith(".html")) return "text/html";
+    else if (filename.endsWith(".css")) return "text/css";
+    else if (filename.endsWith(".js")) return "application/javascript";
+    else if (filename.endsWith(".png")) return "image/png";
+    else if (filename.endsWith(".jpg")) return "image/jpeg";
+    return "text/plain";
+}
 
-    // Список файлов в JSON
-    server.on("/list", HTTP_GET, [](AsyncWebServerRequest *request) {
-        String json = "[";
-        if (sdInitialized) {
-            File root = SD.open("/");
-            File file = root.openNextFile();
-            bool first = true;
-            while (file) {
-                if (!file.isDirectory()) {
-                    if (!first) json += ",";
-                    json += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
-                    first = false;
-                }
-                file = root.openNextFile();
-            }
-            root.close();
-        }
-        json += "]";
-        request->send(200, "application/json", json);
-    });
-
-    // Скачивание файла
-    server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (request->hasParam("file")) {
-            String filename = "/" + request->getParam("file")->value();
-            if (SD.exists(filename)) {
-                request->send(SD, filename, "application/octet-stream");
-                return;
-            }
-        }
-        request->send(404, "text/plain", "Файл не найден");
-    });
-
-    // Удаление файла
-    server.on("/delete", HTTP_DELETE, [](AsyncWebServerRequest *request) {
-        if (request->hasParam("file")) {
-            String filename = "/" + request->getParam("file")->value();
-            if (SD.exists(filename)) {
-                SD.remove(filename);
-                request->send(200, "text/plain", "Удалено");
-                return;
-            }
-        }
-        request->send(400, "text/plain", "Ошибка удаления");
-    });
-
-    // Загрузка файлов на SD через POST multipart/form-data
-    server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html", "<h3>Файл загружен!</h3><a href='/'>Назад</a>");
-    }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-        if (!index) {
-            if (!filename.startsWith("/")) filename = "/" + filename;
-            Serial.printf("[Upload] Старт загрузки: %s\n", filename.c_str());
-            request->_tempFile = SD.open(filename, FILE_WRITE);
-        }
-        if (request->_tempFile) {
-            request->_tempFile.write(data, len);
-        }
-        if (final) {
-            if (request->_tempFile) {
-                request->_tempFile.close();
-                Serial.println("[Upload] Загрузка завершена!");
-            }
-        }
-    });
-
-    server.begin();
-    Serial.println("[Web] HTTP Сервер запущен.");
+bool serveFile(String path) {
+    if (!SD.exists(path)) return false;
+    File file = SD.open(path, FILE_READ);
+    if (!file || file.isDirectory()) return false;
+    server.streamFile(file, getContentType(path));
+    file.close();
+    return true;
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH); // Выкл
 
-    // Подключение к Wi-Fi
+    // Инициализация SPI и SD
+    SPI.begin();
+    SPI.pins(SCLK_PIN, MISO_PIN, MOSI_PIN, SD_CS); // Назначение пинов 
+    if (!SD.begin(SD_CS)) {
+        Serial.println("SD Card Mount Failed");
+        return;
+    }
+
+    loadConfig();
+
+    // Попытка STA
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    Serial.print("[WiFi] Подключение");
-    while (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(currentSSID.c_str(), currentPASS.c_str());
+    Serial.print("Connecting to WiFi");
+    
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 20) { // 10 секунд
         delay(500);
         Serial.print(".");
+        retries++;
     }
-    Serial.println("\n[WiFi] Подключено!");
-    Serial.print("[WiFi] IP-адрес для входа в браузер: http://");
-    Serial.println(WiFi.localIP());
 
-    // Инициализация SD
-    sdInitialized = initSDCard();
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
+    } else {
+        // Fallback AP
+        Serial.println("\nWiFi connection failed. Starting AP.");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("sd-card-3dp", "12345678");
+        Serial.println("AP IP: " + WiFi.softAPIP().toString());
+    }
 
-    // Запуск сервера
-    setupWebServer();
+    digitalWrite(LED_PIN, LOW); // Вкл (индикация готовности)
+
+    // Маршруты
+    server.on("/", HTTP_GET, []() {
+        if (!serveFile("/index.html")) {
+            server.send_P(200, "text/html", fallback_html);
+        }
+    });
+
+    server.on("/api/list", HTTP_GET, []() {
+        String dirPath = server.hasArg("dir") ? server.arg("dir") : "/";
+        File dir = SD.open(dirPath);
+        
+        DynamicJsonDocument doc(2048);
+        JsonArray array = doc.to<JsonArray>();
+
+        while (true) {
+            File entry = dir.openNextFile();
+            if (!entry) break;
+            JsonObject obj = array.createNestedObject();
+            obj["name"] = String(entry.name());
+            obj["isDir"] = entry.isDirectory();
+            if (!entry.isDirectory()) obj["size"] = entry.size();
+            entry.close();
+        }
+        dir.close();
+
+        String response;
+        serializeJson(doc, response);
+        server.send(200, "application/json", response);
+    });
+
+    server.on("/api/upload", HTTP_POST, []() {
+        server.send(200, "text/plain", "OK");
+    }, []() {
+        HTTPUpload& upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+            String filename = upload.filename;
+            if (!filename.startsWith("/")) filename = "/" + filename;
+            if (SD.exists(filename)) SD.remove(filename);
+            fsUploadFile = SD.open(filename, FILE_WRITE);
+        } else if (upload.status == UPLOAD_FILE_WRITE) {
+            if (fsUploadFile) fsUploadFile.write(upload.buf, upload.currentSize);
+        } else if (upload.status == UPLOAD_FILE_END) {
+            if (fsUploadFile) fsUploadFile.close();
+        }
+    });
+
+    server.on("/api/delete", HTTP_POST, []() {
+        String path = server.arg("path");
+        bool isDir = server.arg("isDir") == "true";
+        bool res = isDir ? SD.rmdir(path) : SD.remove(path);
+        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
+    });
+
+    server.on("/api/rename", HTTP_POST, []() {
+        String oldPath = server.arg("old");
+        String newPath = server.arg("new");
+        bool res = SD.rename(oldPath, newPath);
+        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
+    });
+
+    server.on("/api/mkdir", HTTP_POST, []() {
+        String path = server.arg("path");
+        bool res = SD.mkdir(path);
+        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
+    });
+
+    server.on("/api/thumb", HTTP_GET, []() {
+        String file = server.arg("file"); // e.g. /model.gcode
+        int dot = file.lastIndexOf('.');
+        String base = (dot > 0) ? file.substring(0, dot) : file;
+        
+        String jpgPath = base + ".jpg";
+        String pngPath = base + ".png";
+        
+        if (serveFile(jpgPath)) return;
+        if (serveFile(pngPath)) return;
+        if (serveFile("/logo.jpg")) return;
+        if (serveFile("/logo.png")) return;
+
+        // Если ничего нет, генерируем заглушку SVG (300x300)
+        String svg = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='300' height='300' fill='#ddd'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='20'>No preview</text></svg>";
+        server.send(200, "image/svg+xml", svg);
+    });
+
+    // Обработчик скачивания любых других файлов
+    server.onNotFound([]() {
+        if (!serveFile(server.uri())) {
+            server.send(404, "text/plain", "Not Found");
+        }
+    });
+
+    server.begin();
+    Serial.println("HTTP server started");
 }
 
 void loop() {
-    // AsyncWebServer работает в фоновом режиме на обработчиках ESP32
-    delay(1000);
+    server.handleClient();
 }
