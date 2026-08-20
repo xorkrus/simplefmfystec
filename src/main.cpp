@@ -233,7 +233,12 @@ void handleList() {
   FsFile f = d.openNextFile();
   while (f) {
     if (json != "[") json += ",";
-    json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
+    
+    // Правильный способ получить имя файла в новой версии SdFat
+    char fname[256];
+    f.getName(fname, sizeof(fname));
+    
+    json += "{\"name\":\"" + String(fname) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
     f = d.openNextFile();
   }
   f.close();
