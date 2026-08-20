@@ -1,469 +1,222 @@
-/*
- * Simple File Manager for FYSETC SD WIFI Card (ESP8285)
- */
-
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
+#include <WiFi.h>
 #include <SPI.h>
 #include <SD.h>
+#include <ESPAsyncWebServer.h>
 
-#define SD_CS 4
-#define MISO_PIN 12
-#define MOSI_PIN 13
-#define SCLK_PIN 14
-#define LED_PIN 2
+// ============================================================================
+// Настройки сети Wi-Fi
+// ============================================================================
+const char* ssid     = "YOUR_SSID";     // Замените на имя вашей сети
+const char* password = "YOUR_PASSWORD"; // Замените на пароль
 
-#define HTTP_PORT 80
-#define DEFAULT_SSID "xopkland"
-#define DEFAULT_PASSWORD "1234567890987654321"
-#define AP_SSID "sd-card-3dp"
-#define AP_PASSWORD "12345678"
+// ============================================================================
+// Настройки распиновки FYSETC SD-WiFi
+// ============================================================================
+#define SD_CS_PIN    13
+#define SD_SCK_PIN   14
+#define SD_MISO_PIN  2
+#define SD_MOSI_PIN  15
+#define SD_MUX_PIN   12 
 
-#define MAX_UPLOAD_SIZE (500UL * 1024 * 1024)
-#define MIN_FREE_SPACE (10UL * 1024 * 1024)
+// Создаем объекты SPI и Веб-сервера на порту 80
+SPIClass sdSPI(HSPI);
+AsyncWebServer server(80);
 
-ESP8266WebServer server(HTTP_PORT);
+// Переменная статуса SD
+bool sdInitialized = false;
 
-String wifiSSID = "";
-String wifiPassword = "";
-bool apMode = false;
+// HTML-шаблон веб-интерфейса
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FYSETC SD-WiFi Manager</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; color: #333; }
+    h2 { color: #0056b3; }
+    .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    ul { list-style-type: none; padding: 0; }
+    li { padding: 8px 0; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+    a { color: #007bff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .btn { background: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
+    .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 12px; }
+    input[type=file] { margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h2>FYSETC SD-WiFi Control Panel</h2>
+  
+  <div class="card">
+    <h3>Загрузить файл на SD-карту</h3>
+    <form method="POST" action="/upload" enctype="multipart/form-data">
+      <input type="file" name="upload" required><br>
+      <input type="submit" value="Загрузить" class="btn">
+    </form>
+  </div>
 
-extern const char fallbackHTML[];
+  <div class="card">
+    <h3>Файлы на SD-карте</h3>
+    <div id="file-list">Загрузка списка файлов...</div>
+  </div>
 
-void initSDCard();
-void parseSetupIni();
-void connectToWiFi();
-void startAPMode();
-void handleRoot();
-void handleListDir();
-void handleDeleteFile();
-void handleRenameFile();
-void handleMoveFile();
-void handleCreateDir();
-void handleDownload();
-void handleUpload();
-void handleThumbnail();
-void handleNotFound();
-String getContentType(String filename);
-String urlDecode(String input);
-void sendDefaultThumbnail();
-bool isValidPath(const String& path);
-bool isPathSafe(const String& path);
-uint32_t getFreeSpace();
+<script>
+function loadFiles() {
+  fetch('/list')
+    .then(response => response.json())
+    .then(data => {
+      let html = '<ul>';
+      if(data.length === 0) {
+        html += '<li>Файлы отсутствуют</li>';
+      } else {
+        data.forEach(file => {
+          html += `<li>
+            <span><a href="/download?file=${encodeURIComponent(file.name)}">${file.name}</a> (${(file.size/1024).toFixed(1)} KB)</span>
+            <button class="btn btn-danger" onclick="deleteFile('${file.name}')">Удалить</button>
+          </li>`;
+        });
+      }
+      html += '</ul>';
+      document.getElementById('file-list').innerHTML = html;
+    });
+}
 
-#include "html.h"
+function deleteFile(filename) {
+  if(confirm('Удалить файл ' + filename + '?')) {
+    fetch('/delete?file=' + encodeURIComponent(filename), { method: 'DELETE' })
+      .then(() => loadFiles());
+  }
+}
+
+loadFiles();
+</script>
+</body>
+</html>
+)rawliteral";
+
+// Инициализация SD-карты
+bool initSDCard() {
+    pinMode(SD_MUX_PIN, OUTPUT);
+    digitalWrite(SD_MUX_PIN, LOW); 
+    delay(100);
+
+    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+
+    if (!SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
+        digitalWrite(SD_MUX_PIN, HIGH);
+        delay(100);
+        if (!SD.begin(SD_CS_PIN, sdSPI, 20000000)) {
+            Serial.println("[SD] Ошибка инициализации!");
+            return false;
+        }
+    }
+    Serial.println("[SD] Карточка успешно инициализирована.");
+    return true;
+}
+
+// Настройка эндпоинтов веб-сервера
+void setupWebServer() {
+    // Главная страница
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", index_html);
+    });
+
+    // Список файлов в JSON
+    server.on("/list", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String json = "[";
+        if (sdInitialized) {
+            File root = SD.open("/");
+            File file = root.openNextFile();
+            bool first = true;
+            while (file) {
+                if (!file.isDirectory()) {
+                    if (!first) json += ",";
+                    json += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
+                    first = false;
+                }
+                file = root.openNextFile();
+            }
+            root.close();
+        }
+        json += "]";
+        request->send(200, "application/json", json);
+    });
+
+    // Скачивание файла
+    server.on("/download", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (request->hasParam("file")) {
+            String filename = "/" + request->getParam("file")->value();
+            if (SD.exists(filename)) {
+                request->send(SD, filename, "application/octet-stream");
+                return;
+            }
+        }
+        request->send(404, "text/plain", "Файл не найден");
+    });
+
+    // Удаление файла
+    server.on("/delete", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+        if (request->hasParam("file")) {
+            String filename = "/" + request->getParam("file")->value();
+            if (SD.exists(filename)) {
+                SD.remove(filename);
+                request->send(200, "text/plain", "Удалено");
+                return;
+            }
+        }
+        request->send(400, "text/plain", "Ошибка удаления");
+    });
+
+    // Загрузка файлов на SD через POST multipart/form-data
+    server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", "<h3>Файл загружен!</h3><a href='/'>Назад</a>");
+    }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+        if (!index) {
+            if (!filename.startsWith("/")) filename = "/" + filename;
+            Serial.printf("[Upload] Старт загрузки: %s\n", filename.c_str());
+            request->_tempFile = SD.open(filename, FILE_WRITE);
+        }
+        if (request->_tempFile) {
+            request->_tempFile.write(data, len);
+        }
+        if (final) {
+            if (request->_tempFile) {
+                request->_tempFile.close();
+                Serial.println("[Upload] Загрузка завершена!");
+            }
+        }
+    });
+
+    server.begin();
+    Serial.println("[Web] HTTP Сервер запущен.");
+}
 
 void setup() {
     Serial.begin(115200);
-    delay(100);
-    
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-    
-    pinMode(15, OUTPUT);
-    digitalWrite(15, LOW);
-    
-    initSDCard();
-    parseSetupIni();
-    connectToWiFi();
-    
-    server.on("/", handleRoot);
-    server.on("/list", handleListDir);
-    server.on("/delete", handleDeleteFile);
-    server.on("/rename", handleRenameFile);
-    server.on("/move", handleMoveFile);
-    server.on("/mkdir", handleCreateDir);
-    server.on("/download", handleDownload);
-    server.on("/upload", HTTP_POST, [](){ server.send(200, "text/plain", "OK"); }, handleUpload);
-    server.on("/thumb", handleThumbnail);
-    server.onNotFound(handleNotFound);
-    
-    server.begin();
-    Serial.println("HTTP server started");
-    
-    digitalWrite(LED_PIN, HIGH);
+    delay(1000);
+
+    // Подключение к Wi-Fi
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    Serial.print("[WiFi] Подключение");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\n[WiFi] Подключено!");
+    Serial.print("[WiFi] IP-адрес для входа в браузер: http://");
+    Serial.println(WiFi.localIP());
+
+    // Инициализация SD
+    sdInitialized = initSDCard();
+
+    // Запуск сервера
+    setupWebServer();
 }
 
 void loop() {
-    server.handleClient();
-    yield();
-}
-
-void initSDCard() {
-    Serial.println("Initializing SD card...");
-    SPI.pins(SCLK_PIN, MISO_PIN, MOSI_PIN, SD_CS);
-    
-    if (SD.begin(SD_CS)) {
-        Serial.println("SD card initialized successfully.");
-        File root = SD.open("/");
-        if (root && root.isDirectory()) {
-            Serial.println("Root directory OK.");
-            root.close();
-        } else {
-            Serial.println("Failed to open root directory.");
-        }
-    } else {
-        Serial.println("SD card initialization failed!");
-        Serial.println("Check: card inserted, FAT16/FAT32 format, wiring (MISO=12, MOSI=13, SCLK=14, CS=4), GPIO15 LOW.");
-    }
-}
-
-void parseSetupIni() {
-    File setupFile = SD.open("/SETUP.INI", FILE_READ);
-    if (!setupFile) {
-        Serial.println("SETUP.INI not found, using defaults");
-        wifiSSID = DEFAULT_SSID;
-        wifiPassword = DEFAULT_PASSWORD;
-        return;
-    }
-    
-    String line;
-    bool inWifiSection = false;
-    while (setupFile.available()) {
-        line = setupFile.readStringUntil('\n');
-        line.trim();
-        if (line.startsWith("[WIFI]")) { inWifiSection = true; continue; }
-        if (line.startsWith("[") && !line.startsWith("[WIFI]")) { inWifiSection = false; continue; }
-        
-        if (inWifiSection) {
-            if (line.startsWith("SSID=")) { wifiSSID = line.substring(5); wifiSSID.trim(); }
-            else if (line.startsWith("PASSWORD=")) { wifiPassword = line.substring(9); wifiPassword.trim(); }
-        }
-    }
-    setupFile.close();
-    Serial.print("WiFi SSID: "); Serial.println(wifiSSID);
-}
-
-void connectToWiFi() {
-    Serial.print("Connecting to WiFi: "); Serial.println(wifiSSID);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-    
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-        delay(500); Serial.print("."); attempts++;
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi connected!");
-        Serial.print("IP address: "); Serial.println(WiFi.localIP());
-    } else {
-        Serial.println("\nWiFi failed, starting AP mode");
-        startAPMode();
-    }
-}
-
-void startAPMode() {
-    apMode = true;
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    Serial.print("AP Mode: "); Serial.print(AP_SSID);
-    Serial.print(" Pass: "); Serial.println(AP_PASSWORD);
-    Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
-    
-    for (int i = 0; i < 5; i++) {
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-        delay(200);
-    }
-    digitalWrite(LED_PIN, HIGH);
-}
-
-bool isValidPath(const String& path) {
-    return !path.isEmpty() && path.startsWith("/");
-}
-
-bool isPathSafe(const String& path) {
-    return path.indexOf("..") < 0 && path.indexOf("//") < 0 && path.length() <= 255;
-}
-
-uint32_t getFreeSpace() {
-    // ESP8266 SD library doesn't expose free space directly. 
-    // Return safe default if card is mounted.
-    return 100UL * 1024 * 1024; 
-}
-
-void handleRoot() {
-    if (SD.exists("/index.html")) {
-        File file = SD.open("/index.html", FILE_READ);
-        if (file) { server.streamFile(file, "text/html"); file.close(); return; }
-    }
-    server.send(200, "text/html", fallbackHTML);
-}
-
-void handleListDir() {
-    String path = server.arg("path");
-    if (path.isEmpty()) path = "/";
-    
-    if (!isValidPath(path) || !isPathSafe(path)) {
-        server.send(400, "application/json", "{\"error\":\"Invalid path\"}"); return;
-    }
-    if (!SD.exists(path)) {
-        server.send(404, "application/json", "{\"error\":\"Path not found\"}"); return;
-    }
-    
-    File dir = SD.open(path, FILE_READ);
-    if (!dir || !dir.isDirectory()) {
-        server.send(400, "application/json", "{\"error\":\"Not a directory\"}"); return;
-    }
-    
-    String json = "{\"dirs\":[";
-    String files = "";
-    bool firstDir = true;
-    
-    File entry = dir.openNextFile();
-    while (entry) {
-        String name = entry.name();
-        int lastSlash = name.lastIndexOf('/');
-        if (lastSlash >= 0) name = name.substring(lastSlash + 1);
-        
-        if (entry.isDirectory()) {
-            if (!firstDir) json += ",";
-            json += "\"" + name + "\"";
-            firstDir = false;
-        } else {
-            if (files.length() > 0) files += ",";
-            files += "{\"name\":\"" + name + "\",\"size\":" + String(entry.size()) + "}";
-        }
-        entry.close();
-        entry = dir.openNextFile();
-    }
-    dir.close();
-    json += "],\"files\":[" + files + "]}";
-    server.send(200, "application/json", json);
-}
-
-void handleDeleteFile() {
-    String path = "/" + urlDecode(server.arg("path"));
-    while (path.startsWith("//")) path = path.substring(1);
-    if (path.endsWith("/") && path.length() > 1) path = path.substring(0, path.length() - 1);
-    
-    if (!isValidPath(path) || !isPathSafe(path)) { server.send(400, "text/plain", "Invalid path"); return; }
-    if (path == "/") { server.send(403, "text/plain", "Cannot delete root"); return; }
-    if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
-    
-    if (SD.remove(path) || SD.rmdir(path)) server.send(200, "text/plain", "Deleted");
-    else server.send(500, "text/plain", "Delete failed");
-}
-
-void handleRenameFile() {
-    String oldPath = "/" + urlDecode(server.arg("old"));
-    String newPath = "/" + urlDecode(server.arg("new"));
-    while (oldPath.startsWith("//")) oldPath = oldPath.substring(1);
-    while (newPath.startsWith("//")) newPath = newPath.substring(1);
-    
-    if (!isValidPath(oldPath) || !isValidPath(newPath) || !isPathSafe(oldPath) || !isPathSafe(newPath)) {
-        server.send(400, "text/plain", "Invalid path"); return;
-    }
-    if (!SD.exists(oldPath)) { server.send(404, "text/plain", "Source not found"); return; }
-    
-    if (SD.rename(oldPath, newPath)) server.send(200, "text/plain", "Renamed");
-    else server.send(500, "text/plain", "Rename failed");
-}
-
-void handleMoveFile() {
-    String src = "/" + urlDecode(server.arg("src"));
-    String dst = "/" + urlDecode(server.arg("dst"));
-    while (src.startsWith("//")) src = src.substring(1);
-    while (dst.startsWith("//")) dst = dst.substring(1);
-    
-    if (!isValidPath(src) || !isValidPath(dst) || !isPathSafe(src) || !isPathSafe(dst)) {
-        server.send(400, "text/plain", "Invalid path"); return;
-    }
-    if (!SD.exists(src)) { server.send(404, "text/plain", "Source not found"); return; }
-    
-    int lastSlash = dst.lastIndexOf('/');
-    if (lastSlash > 0) {
-        String destDir = dst.substring(0, lastSlash);
-        if (!SD.exists(destDir)) SD.mkdir(destDir);
-    }
-    
-    if (SD.rename(src, dst)) server.send(200, "text/plain", "Moved");
-    else server.send(500, "text/plain", "Move failed");
-}
-
-void handleCreateDir() {
-    String path = "/" + urlDecode(server.arg("path"));
-    while (path.startsWith("//")) path = path.substring(1);
-    
-    if (!isValidPath(path) || !isPathSafe(path)) { server.send(400, "text/plain", "Invalid path"); return; }
-    if (SD.mkdir(path)) server.send(200, "text/plain", "Created");
-    else server.send(500, "text/plain", "Create failed");
-}
-
-void handleDownload() {
-    String path = "/" + urlDecode(server.arg("file"));
-    while (path.startsWith("//")) path = path.substring(1);
-    
-    if (!isValidPath(path) || !isPathSafe(path)) { server.send(400, "text/plain", "Invalid path"); return; }
-    if (!SD.exists(path)) { server.send(404, "text/plain", "File not found"); return; }
-    
-    File file = SD.open(path, FILE_READ);
-    if (!file) { server.send(500, "text/plain", "Cannot open file"); return; }
-    
-    server.sendHeader("Content-Disposition", "attachment; filename=\"" + path.substring(path.lastIndexOf('/') + 1) + "\"");
-    server.streamFile(file, getContentType(path));
-    file.close();
-}
-
-void handleUpload() {
-    static File fsUploadFile;
-    static String uploadPath;
-    static uint32_t totalUploaded = 0;
-    
-    HTTPUpload& upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-        uploadPath = server.arg("path");
-        if (uploadPath.isEmpty()) uploadPath = "/";
-        
-        if (!isValidPath(uploadPath) || !isPathSafe(uploadPath)) { server.send(400, "text/plain", "Invalid path"); return; }
-        
-        String filename = uploadPath;
-        if (!filename.endsWith("/")) filename += "/";
-        filename += upload.filename;
-        while (filename.indexOf("//") >= 0) filename.replace("//", "/");
-        if (!filename.startsWith("/")) filename = "/" + filename;
-        
-        if (getFreeSpace() < MIN_FREE_SPACE) { server.send(507, "text/plain", "Insufficient free space"); return; }
-        if (upload.totalSize > MAX_UPLOAD_SIZE) { server.send(413, "text/plain", "File too large"); return; }
-        
-        fsUploadFile = SD.open(filename, FILE_WRITE);
-        totalUploaded = 0;
-        if (!fsUploadFile) { server.send(500, "text/plain", "Cannot create file"); return; }
-        
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (fsUploadFile) {
-            totalUploaded += fsUploadFile.write(upload.buf, upload.currentSize);
-            if (totalUploaded > MAX_UPLOAD_SIZE) {
-                fsUploadFile.close();
-                SD.remove(uploadPath + "/" + upload.filename);
-                server.send(413, "text/plain", "File too large");
-            }
-        }
-    } else if (upload.status == UPLOAD_FILE_END) {
-        if (fsUploadFile) {
-            fsUploadFile.close();
-            Serial.println("Upload complete");
-        }
-    }
-}
-
-void handleThumbnail() {
-    String filePath = server.arg("file");
-    if (filePath == "default") { sendDefaultThumbnail(); return; }
-    
-    filePath = "/" + urlDecode(filePath);
-    while (filePath.startsWith("//")) filePath = filePath.substring(1);
-    
-    if (!isValidPath(filePath) || !isPathSafe(filePath) || !SD.exists(filePath)) {
-        sendDefaultThumbnail(); return;
-    }
-    
-    String baseName = filePath;
-    int dotPos = baseName.lastIndexOf('.');
-    if (dotPos > 0) baseName = baseName.substring(0, dotPos);
-    
-    String thumbPath;
-    if (SD.exists(baseName + ".jpg")) thumbPath = baseName + ".jpg";
-    else if (SD.exists(baseName + ".png")) thumbPath = baseName + ".png";
-    else if (SD.exists("/logo.jpg")) thumbPath = "/logo.jpg";
-    else if (SD.exists("/logo.png")) thumbPath = "/logo.png";
-    
-    if (!thumbPath.isEmpty() && SD.exists(thumbPath)) {
-        File thumb = SD.open(thumbPath, FILE_READ);
-        if (thumb) {
-            server.sendHeader("Content-Length", String(thumb.size()));
-            server.streamFile(thumb, getContentType(thumbPath));
-            thumb.close();
-            return;
-        }
-    }
-    sendDefaultThumbnail();
-}
-
-void handleNotFound() {
-    server.send(404, "text/plain", "Not Found");
-}
-
-String getContentType(String filename) {
-    if (filename.endsWith(".html")) return "text/html";
-    if (filename.endsWith(".css")) return "text/css";
-    if (filename.endsWith(".js")) return "application/javascript";
-    if (filename.endsWith(".json")) return "application/json";
-    if (filename.endsWith(".png")) return "image/png";
-    if (filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
-    if (filename.endsWith(".gif")) return "image/gif";
-    if (filename.endsWith(".ico")) return "image/x-icon";
-    if (filename.endsWith(".svg")) return "image/svg+xml";
-    if (filename.endsWith(".gcode") || filename.endsWith(".gco") || filename.endsWith(".g")) return "text/plain";
-    return "application/octet-stream";
-}
-
-String urlDecode(String input) {
-    String decoded = "";
-    char buffer[3];
-    for (unsigned int i = 0; i < input.length(); i++) {
-        if (input[i] == '%') {
-            if (i + 2 < input.length()) {
-                buffer[0] = input[i + 1];
-                buffer[1] = input[i + 2];
-                buffer[2] = '\0';
-                decoded += char(strtol(buffer, nullptr, 16));
-                i += 2;
-            }
-        } else if (input[i] == '+') {
-            decoded += ' ';
-        } else {
-            decoded += input[i];
-        }
-    }
-    return decoded;
-}
-
-void sendDefaultThumbnail() {
-    static const unsigned char placeholder[] PROGMEM = {
-        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
-        0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x10, 0x0B, 0x0C, 0x0E, 0x0C, 0x0A, 0x10,
-        0x0E, 0x0D, 0x0E, 0x12, 0x11, 0x10, 0x13, 0x18, 0x28, 0x1A, 0x18, 0x16, 0x16, 0x18, 0x31, 0x23,
-        0x25, 0x1B, 0x28, 0x3A, 0x33, 0x3D, 0x3C, 0x39, 0x33, 0x38, 0x37, 0x40, 0x48, 0x5C, 0x4E, 0x40,
-        0x44, 0x57, 0x45, 0x37, 0x38, 0x52, 0x72, 0x54, 0x57, 0x5F, 0x61, 0x65, 0x68, 0x65, 0x3E, 0x4D,
-        0x71, 0x79, 0x70, 0x64, 0x78, 0x5C, 0x63, 0x64, 0x58, 0xFF, 0xDB, 0x00, 0x43, 0x01, 0x11, 0x11,
-        0x14, 0x13, 0x14, 0x27, 0x16, 0x16, 0x27, 0x50, 0x35, 0x2D, 0x35, 0x50, 0x50, 0x50, 0x50, 0x50,
-        0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50,
-        0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50,
-        0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x50,
-        0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00,
-        0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4,
-        0x00, 0xB5, 0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00,
-        0x00, 0x01, 0x7D, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13,
-        0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15,
-        0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25,
-        0x26, 0x27, 0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46,
-        0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66,
-        0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86,
-        0x87, 0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4,
-        0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2,
-        0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9,
-        0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5,
-        0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xC4, 0x00, 0x1F, 0x01, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01,
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
-        0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x11, 0x00, 0x02, 0x01, 0x02, 0x04,
-        0x04, 0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77, 0x00, 0x01, 0x02, 0x03, 0x11,
-        0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08,
-        0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0, 0x15, 0x62, 0x72, 0xD1, 0x0A,
-        0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x35,
-        0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55,
-        0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75,
-        0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x92, 0x93,
-        0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA,
-        0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8,
-        0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6,
-        0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xDA, 0x00,
-        0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB, 0xD5, 0x00, 0x01, 0x85, 0x20, 0x40, 0x01, 0x00,
-        0x01, 0xFF, 0xD9
-    };
-    server.sendHeader("Content-Length", String(sizeof(placeholder)));
-    server.sendHeader("Content-Type", "image/jpeg");
-    server.sendContent_P((const char*)placeholder, sizeof(placeholder));
+    // AsyncWebServer работает в фоновом режиме на обработчиках ESP32
+    delay(1000);
 }
