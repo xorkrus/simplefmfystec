@@ -221,14 +221,14 @@ void handleThumbnail() {
     String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
     if (SD.exists(thumbPath)) {
       File f = SD.open(thumbPath, "r");
-      server.stream(f, "image/jpeg", f.size());
+      server.stream(f, "image/jpeg", HTTP_GET, f.size());
       f.close();
       return;
     }
     thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
     if (SD.exists(thumbPath)) {
       File f = SD.open(thumbPath, "r");
-      server.stream(f, "image/png", f.size());
+      server.stream(f, "image/png", HTTP_GET, f.size());
       f.close();
       return;
     }
@@ -236,13 +236,13 @@ void handleThumbnail() {
   
   if (SD.exists("/logo.jpg")) {
     File f = SD.open("/logo.jpg", "r");
-    server.stream(f, "image/jpeg", f.size());
+    server.stream(f, "image/jpeg", HTTP_GET, f.size());
     f.close();
     return;
   }
   if (SD.exists("/logo.png")) {
     File f = SD.open("/logo.png", "r");
-    server.stream(f, "image/png", f.size());
+    server.stream(f, "image/png", HTTP_GET, f.size());
     f.close();
     return;
   }
@@ -307,7 +307,7 @@ void handleDownload() {
   else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
   else if (path.endsWith(".png")) contentType = "image/png";
   
-  server.stream(download, contentType, download.size());
+  server.stream(download, contentType, HTTP_GET, download.size());
   download.close();
 }
 
@@ -331,10 +331,9 @@ void handleUpload() {
 void handleRoot() {
   if (hasCustomIndex) {
     File idx = SD.open("/index.html", "r");
-    server.stream(idx, "text/html", idx.size());
+    server.stream(idx, "text/html", HTTP_GET, idx.size());
     idx.close();
   } else {
-    // send_P используется для строк из PROGMEM, чтобы не забивать оперативную память
     server.send_P(200, "text/html", fallback_html); 
   }
 }
@@ -346,7 +345,7 @@ void setup() {
 
   if (!SD.begin(SD_CS)) {
     Serial.println("SD Card Mount Failed!");
-    while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); } // Blink fast on error
+    while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); }
   }
 
   hasCustomIndex = SD.exists("/index.html");
