@@ -6,7 +6,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SPI.h>
-#include <SdFat.h>
+#include <SD.h>
 
 // Pin definitions
 #define SD_CS 4
@@ -22,8 +22,8 @@
 #define AP_SSID "sd-card-3dp"
 #define AP_PASSWORD "12345678"
 
-#define MAX_UPLOAD_SIZE (500UL * 1024 * 1024) // 500 MB
-#define MIN_FREE_SPACE (10UL * 1024 * 1024)   // 10 MB minimum free space
+#define MAX_UPLOAD_SIZE (500UL * 1024 * 1024)
+#define MIN_FREE_SPACE (10UL * 1024 * 1024)
 
 ESP8266WebServer server(HTTP_PORT);
 
@@ -32,10 +32,6 @@ String wifiPassword = "";
 bool apMode = false;
 
 extern const char fallbackHTML[];
-
-// SdFat instance
-SdFat sd;
-SdFile root;
 
 void initSDCard();
 void parseSetupIni();
@@ -57,8 +53,6 @@ void sendDefaultThumbnail();
 bool isValidPath(const String& path);
 bool isPathSafe(const String& path);
 uint32_t getFreeSpace();
-bool fileExists(const char* path);
-bool dirExists(const char* path);
 
 #include "html.h"
 
@@ -106,46 +100,53 @@ void initSDCard() {
     SPI.pins(SCLK_PIN, MISO_PIN, MOSI_PIN, SD_CS);
     
     // Try different SPI speeds
-    uint32_t speeds[] = {400000, 1000000, 4000000, 8000000, 16000000};
+    uint32_t speeds[] = {400000, 1000000, 4000000, 8000000, 16000000, 25000000};
     bool initialized = false;
     
-    for (int i = 0; i < 5 && !initialized; i++) {
+    for (int i = 0; i < 6 && !initialized; i++) {
         Serial.print("Trying SPI speed: ");
         Serial.print(speeds[i]);
         Serial.println(" Hz");
         
-        if (sd.begin(SD_CS, SD_SCK_HZ(speeds[i]))) {
+        if (SD.begin(SD_CS, SPI, speeds[i])) {
             initialized = true;
             Serial.print("SD card initialized successfully at ");
             Serial.print(speeds[i]);
             Serial.println(" Hz");
             
-            // Print card info
-            Serial.print("Card type: ");
-            switch (sd.card()->type()) {
-                case SD_CARD_TYPE_SD1:
-                    Serial.println("SD1");
-                    break;
-                case SD_CARD_TYPE_SD2:
-                    Serial.println("SD2");
-                    break;
-                case SD_CARD_TYPE_SDHC:
-                    Serial.println("SDHC");
-                    break;
-                default:
-                    Serial.println("Unknown");
+            // Get card type
+            uint8_t cardType = SD.cardType();
+            if (cardType == CARD_NONE) {
+                Serial.println("No SD card attached");
+                initialized = false;
+                continue;
             }
             
-            // Print volume info
-            uint32_t volumeSize = sd.vol()->blocksPerCluster() * sd.vol()->clusterCount() / 2048;
-            Serial.print("Volume size (MB): ");
-            Serial.println(volumeSize);
+            Serial.print("SD Card Type: ");
+            if (cardType == CARD_MMC) {
+                Serial.println("MMC");
+            } else if (cardType == CARD_SD) {
+                Serial.println("SDSC");
+            } else if (cardType == CARD_SDHC) {
+                Serial.println("SDHC");
+            } else {
+                Serial.println("UNKNOWN");
+            }
+            
+            // Get card size
+            uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+            Serial.printf("SD Card Size: %lluMB\n", cardSize);
+            
+            // Get total and used bytes
+            uint64_t totalBytes = SD.totalBytes() / (1024 * 1024);
+            uint64_t usedBytes = SD.usedBytes() / (1024 * 1024);
+            Serial.printf("Total space: %lluMB\n", totalBytes);
+            Serial.printf("Used space: %lluMB\n", usedBytes);
             
         } else {
             Serial.print("Failed at ");
             Serial.print(speeds[i]);
             Serial.println(" Hz");
-            sd.initErrorPrint(&Serial);
             delay(100);
         }
     }
@@ -156,13 +157,6 @@ void initSDCard() {
         Serial.println("- SD card is inserted");
         Serial.println("- SD card is formatted as FAT16/FAT32");
         Serial.println("- Wiring is correct");
-        Serial.println("- CS pin is correct");
-        return;
-    }
-    
-    // Open root directory
-    if (!root.open("/")) {
-        Serial.println("Failed to open root directory!");
         return;
     }
     
@@ -170,8 +164,8 @@ void initSDCard() {
 }
 
 void parseSetupIni() {
-    SdFile setupFile;
-    if (!setupFile.open("/SETUP.INI", O_READ)) {
+    File setupFile = SD.open("/SETUP.INI", FILE_READ);
+    if (!setupFile) {
         Serial.println("SETUP.INI not found, using defaults");
         wifiSSID = DEFAULT_SSID;
         wifiPassword = DEFAULT_PASSWORD;
@@ -180,43 +174,28 @@ void parseSetupIni() {
     
     String line;
     bool inWifiSection = false;
-    char c;
     
     while (setupFile.available()) {
-        c = setupFile.read();
-        if (c == '\n' || c == '\r') {
-            if (line.length() > 0) {
-                line.trim();
-                
-                if (line.startsWith("[WIFI]")) { 
-                    inWifiSection = true; 
-                } else if (line.startsWith("[") && !line.startsWith("[WIFI]")) { 
-                    inWifiSection = false; 
-                } else if (inWifiSection) {
-                    if (line.startsWith("SSID=")) { 
-                        wifiSSID = line.substring(5); 
-                        wifiSSID.trim(); 
-                    } else if (line.startsWith("PASSWORD=")) { 
-                        wifiPassword = line.substring(9); 
-                        wifiPassword.trim(); 
-                    }
-                }
-                line = "";
-            }
-        } else {
-            line += c;
-        }
-    }
-    
-    // Process last line if no newline
-    if (line.length() > 0 && inWifiSection) {
+        line = setupFile.readStringUntil('\n');
         line.trim();
-        if (line.startsWith("SSID=")) { 
-            wifiSSID = line.substring(5); 
-            wifiSSID.trim(); 
-        } else if (line.startsWith("PASSWORD=")) { 
-            wifiPassword = line.substring(9); 
-            wifiPassword.trim(); 
+        
+        if (line.startsWith("[WIFI]")) { 
+            inWifiSection = true; 
+            continue; 
+        }
+        if (line.startsWith("[") && !line.startsWith("[WIFI]")) { 
+            inWifiSection = false; 
+            continue; 
+        }
+        
+        if (inWifiSection) {
+            if (line.startsWith("SSID=")) { 
+                wifiSSID = line.substring(5); 
+                wifiSSID.trim(); 
+            } else if (line.startsWith("PASSWORD=")) { 
+                wifiPassword = line.substring(9); 
+                wifiPassword.trim(); 
+            }
         }
     }
     
@@ -281,26 +260,19 @@ bool isPathSafe(const String& path) {
     return true;
 }
 
-bool fileExists(const char* path) {
-    SdFile file;
-    return file.open(path, O_READ);
-}
-
-bool dirExists(const char* path) {
-    SdFile dir;
-    return dir.open(path, O_READ) && dir.isDir();
-}
-
 uint32_t getFreeSpace() {
-    uint32_t freeClusters = sd.vol()->freeClusterCount();
-    uint32_t bytesPerCluster = sd.vol()->blocksPerCluster() * 512;
-    return freeClusters * bytesPerCluster;
+    uint64_t totalBytes = SD.totalBytes();
+    uint64_t usedBytes = SD.usedBytes();
+    
+    if (totalBytes == 0) return 0;
+    
+    return (totalBytes - usedBytes);
 }
 
 void handleRoot() {
-    if (fileExists("/index.html")) {
-        SdFile file;
-        if (file.open("/index.html", O_READ)) {
+    if (SD.exists("/index.html")) {
+        File file = SD.open("/index.html", FILE_READ);
+        if (file) {
             server.streamFile(file, "text/html");
             file.close();
             return;
@@ -318,9 +290,14 @@ void handleListDir() {
         return;
     }
     
-    SdFile dir;
-    if (!dir.open(path.c_str(), O_READ) || !dir.isDir()) {
+    if (!SD.exists(path)) {
         server.send(404, "application/json", "{\"error\":\"Path not found\"}");
+        return;
+    }
+    
+    File dir = SD.open(path, FILE_READ);
+    if (!dir || !dir.isDirectory()) {
+        server.send(400, "application/json", "{\"error\":\"Not a directory\"}");
         return;
     }
     
@@ -328,20 +305,22 @@ void handleListDir() {
     String files = "";
     bool firstDir = true;
     
-    SdFile entry;
-    while (entry.openNext(&dir, O_READ)) {
-        char name[256];
-        entry.getName(name, sizeof(name));
+    File entry = dir.openNextFile();
+    while (entry) {
+        String name = entry.name();
+        int lastSlash = name.lastIndexOf('/');
+        if (lastSlash >= 0) name = name.substring(lastSlash + 1);
         
-        if (entry.isDir()) {
+        if (entry.isDirectory()) {
             if (!firstDir) json += ",";
-            json += "\"" + String(name) + "\"";
+            json += "\"" + name + "\"";
             firstDir = false;
         } else {
             if (files.length() > 0) files += ",";
-            files += "{\"name\":\"" + String(name) + "\",\"size\":" + String(entry.fileSize()) + "}";
+            files += "{\"name\":\"" + name + "\",\"size\":" + String(entry.size()) + "}";
         }
         entry.close();
+        entry = dir.openNextFile();
     }
     dir.close();
     
@@ -367,19 +346,16 @@ void handleDeleteFile() {
         return;
     }
     
-    SdFile file;
-    if (!file.open(path.c_str(), O_READ)) {
+    if (!SD.exists(path)) {
         server.send(404, "text/plain", "Not found");
         return;
     }
     
     bool deleted = false;
-    if (file.isDir()) {
-        file.close();
-        deleted = sd.rmdir(path.c_str());
+    if (SD.remove(path)) {
+        deleted = true;
     } else {
-        file.close();
-        deleted = sd.remove(path.c_str());
+        deleted = SD.rmdir(path);
     }
     
     if (deleted) {
@@ -402,14 +378,12 @@ void handleRenameFile() {
         return;
     }
     
-    SdFile file;
-    if (!file.open(oldPath.c_str(), O_READ)) {
+    if (!SD.exists(oldPath)) {
         server.send(404, "text/plain", "Source not found");
         return;
     }
-    file.close();
     
-    if (sd.rename(oldPath.c_str(), newPath.c_str())) {
+    if (SD.rename(oldPath, newPath)) {
         server.send(200, "text/plain", "Renamed");
     } else {
         server.send(500, "text/plain", "Rename failed");
@@ -429,22 +403,20 @@ void handleMoveFile() {
         return;
     }
     
-    SdFile file;
-    if (!file.open(src.c_str(), O_READ)) {
+    if (!SD.exists(src)) {
         server.send(404, "text/plain", "Source not found");
         return;
     }
-    file.close();
     
     int lastSlash = dst.lastIndexOf('/');
     if (lastSlash > 0) {
         String destDir = dst.substring(0, lastSlash);
-        if (!dirExists(destDir.c_str())) {
-            sd.mkdir(destDir.c_str(), true);
+        if (!SD.exists(destDir)) {
+            SD.mkdir(destDir);
         }
     }
     
-    if (sd.rename(src.c_str(), dst.c_str())) {
+    if (SD.rename(src, dst)) {
         server.send(200, "text/plain", "Moved");
     } else {
         server.send(500, "text/plain", "Move failed");
@@ -461,7 +433,7 @@ void handleCreateDir() {
         return;
     }
     
-    if (sd.mkdir(path.c_str(), true)) {
+    if (SD.mkdir(path)) {
         server.send(200, "text/plain", "Created");
     } else {
         server.send(500, "text/plain", "Create failed");
@@ -478,9 +450,14 @@ void handleDownload() {
         return;
     }
     
-    SdFile file;
-    if (!file.open(path.c_str(), O_READ)) {
+    if (!SD.exists(path)) {
         server.send(404, "text/plain", "File not found");
+        return;
+    }
+    
+    File file = SD.open(path, FILE_READ);
+    if (!file) {
+        server.send(500, "text/plain", "Cannot open file");
         return;
     }
     
@@ -493,7 +470,7 @@ void handleDownload() {
 }
 
 void handleUpload() {
-    static SdFile fsUploadFile;
+    static File fsUploadFile;
     static String uploadPath;
     static uint32_t totalUploaded = 0;
     
@@ -536,27 +513,29 @@ void handleUpload() {
             return;
         }
         
-        if (!fsUploadFile.open(filename.c_str(), O_WRITE | O_CREAT | O_TRUNC)) {
+        fsUploadFile = SD.open(filename, FILE_WRITE);
+        totalUploaded = 0;
+        
+        if (!fsUploadFile) {
             server.send(500, "text/plain", "Cannot create file");
             return;
         }
-        totalUploaded = 0;
         
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (fsUploadFile.isOpen()) {
+        if (fsUploadFile) {
             size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
             totalUploaded += written;
             
             if (totalUploaded > MAX_UPLOAD_SIZE) {
                 fsUploadFile.close();
-                sd.remove(uploadPath.c_str());
+                SD.remove(uploadPath + "/" + upload.filename);
                 server.send(413, "text/plain", "File too large");
                 return;
             }
         }
         
     } else if (upload.status == UPLOAD_FILE_END) {
-        if (fsUploadFile.isOpen()) {
+        if (fsUploadFile) {
             fsUploadFile.close();
             Serial.println("Upload complete");
             Serial.print("Total uploaded: ");
@@ -582,7 +561,7 @@ void handleThumbnail() {
         return;
     }
     
-    if (!fileExists(filePath.c_str())) {
+    if (!SD.exists(filePath)) {
         sendDefaultThumbnail();
         return;
     }
@@ -592,20 +571,20 @@ void handleThumbnail() {
     if (dotPos > 0) baseName = baseName.substring(0, dotPos);
     
     String thumbPath;
-    if (fileExists((baseName + ".jpg").c_str())) {
+    if (SD.exists(baseName + ".jpg")) {
         thumbPath = baseName + ".jpg";
-    } else if (fileExists((baseName + ".png").c_str())) {
+    } else if (SD.exists(baseName + ".png")) {
         thumbPath = baseName + ".png";
-    } else if (fileExists("/logo.jpg")) {
+    } else if (SD.exists("/logo.jpg")) {
         thumbPath = "/logo.jpg";
-    } else if (fileExists("/logo.png")) {
+    } else if (SD.exists("/logo.png")) {
         thumbPath = "/logo.png";
     }
     
-    if (!thumbPath.isEmpty() && fileExists(thumbPath.c_str())) {
-        SdFile thumb;
-        if (thumb.open(thumbPath.c_str(), O_READ)) {
-            server.sendHeader("Content-Length", String(thumb.fileSize()));
+    if (!thumbPath.isEmpty() && SD.exists(thumbPath)) {
+        File thumb = SD.open(thumbPath, FILE_READ);
+        if (thumb) {
+            server.sendHeader("Content-Length", String(thumb.size()));
             server.streamFile(thumb, getContentType(thumbPath));
             thumb.close();
             return;
