@@ -1,387 +1,362 @@
-#include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <SPI.h>
 #include <SD.h>
-#include <ArduinoJson.h>
+#include <FS.h>
 
-// Распиновка FYSETC SD WIFI
-#define SD_CS     4
-#define MISO_PIN  12
-#define MOSI_PIN  13
-#define SCLK_PIN  14
-#define CS_SENSE  5
-#define LED_PIN   2
+// Pin definitions for FYSETC board
+#define SD_CS 4
+#define MISO_PIN 12
+#define MOSI_PIN 13
+#define SCLK_PIN 14
+#define CS_SENSE 5
+#define LED_PIN 2
 
-// Дефолтные настройки
-#define DEFAULT_SSID      "xopkland"
-#define DEFAULT_PASSWORD  "1234567890987654321"
-
-// Порт сервера
-#define HTTP_PORT 80
-
+// Server
 ESP8266WebServer server(HTTP_PORT);
-File fsUploadFile;
 
-String currentSSID = DEFAULT_SSID;
-String currentPASS = DEFAULT_PASSWORD;
+// Custom index.html flag
+bool hasCustomIndex = false;
 
-// Fallback HTML/JS Интерфейс (если нет index.html на карте)
-const char fallback_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <title>SD WIFI 3D Printer</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
-        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .dropzone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; cursor: pointer; }
-        .dropzone.dragover { background: #e1f5fe; border-color: #03a9f4; }
-        progress { width: 100%; height: 20px; display: none; margin-top: 10px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
-        .thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
-        .btn { padding: 5px 10px; cursor: pointer; margin-right: 5px; }
-        .controls { margin-bottom: 20px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>Файловый менеджер SD WIFI</h2>
-        
-        <div class="controls">
-            <button class="btn" onclick="mkdir()">Создать папку</button>
-            <span id="currentPath" style="font-weight:bold; margin-left:10px;">/</span>
-        </div>
+// Base64 encoded 1x1 gray pixel for placeholder (scaled to 300x300 via CSS)
+const char placeholderImg[] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-        <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
-            Перетащите файлы сюда или нажмите для выбора
-            <input type="file" id="fileInput" style="display:none" multiple onchange="handleFiles(this.files)">
-            <progress id="progressBar" max="100" value="0"></progress>
-        </div>
-
-        <table>
-            <thead>
-                <tr>
-                    <th>Превью</th>
-                    <th>Имя файла</th>
-                    <th>Размер</th>
-                    <th>Действия</th>
-                </tr>
-            </thead>
-            <tbody id="fileList"></tbody>
-        </table>
-    </div>
-
-    <script>
-        let currentDir = "/";
-
-        function loadFiles() {
-            fetch(`/api/list?dir=${currentDir}`)
-                .then(res => res.json())
-                .then(data => {
-                    const tbody = document.getElementById('fileList');
-                    tbody.innerHTML = '';
-                    
-                    if (currentDir !== "/") {
-                        const upDir = currentDir.substring(0, currentDir.lastIndexOf('/')) || "/";
-                        tbody.innerHTML += `<tr><td>📁</td><td><a href="#" onclick="changeDir('${upDir}')">..</a></td><td>-</td><td></td></tr>`;
-                    }
-
-                    data.forEach(file => {
-                        const tr = document.createElement('tr');
-                        const thumbHtml = !file.isDir && file.name.endsWith('.gcode') 
-                            ? `<img class="thumb" src="/api/thumb?file=${currentDir === '/' ? '' : currentDir}/${file.name}" alt="thumb">`
-                            : (file.isDir ? '📁' : '📄');
-                        
-                        const actions = file.isDir 
-                            ? `<button class="btn" onclick="del('${file.name}', true)">Удалить</button>`
-                            : `<a class="btn" href="${currentDir === '/' ? '' : currentDir}/${file.name}" download>Скачать</a>
-                               <button class="btn" onclick="rename('${file.name}')">Переименовать</button>
-                               <button class="btn" onclick="move('${file.name}')">Переместить</button>
-                               <button class="btn" onclick="del('${file.name}', false)">Удалить</button>`;
-
-                        const nameHtml = file.isDir 
-                            ? `<a href="#" onclick="changeDir('${currentDir === '/' ? '' : currentDir}/${file.name}')">${file.name}</a>`
-                            : file.name;
-
-                        tr.innerHTML = `<td>${thumbHtml}</td><td>${nameHtml}</td><td>${file.size || '-'}</td><td>${actions}</td>`;
-                        tbody.appendChild(tr);
-                    });
-                });
-        }
-
-        function changeDir(dir) {
-            currentDir = dir;
-            document.getElementById('currentPath').innerText = currentDir;
-            loadFiles();
-        }
-
-        function handleFiles(files) {
-            if (!files.length) return;
-            const file = files[0];
-            const formData = new FormData();
-            formData.append("file", file, (currentDir === '/' ? '' : currentDir) + '/' + file.name);
-
-            const xhr = new XMLHttpRequest();
-            const pb = document.getElementById('progressBar');
-            
-            xhr.upload.addEventListener('progress', e => {
-                if (e.lengthComputable) {
-                    pb.style.display = 'block';
-                    pb.value = (e.loaded / e.total) * 100;
-                }
-            });
-
-            xhr.addEventListener('load', () => {
-                pb.style.display = 'none';
-                pb.value = 0;
-                loadFiles();
-            });
-
-            xhr.open('POST', '/api/upload', true);
-            xhr.send(formData);
-        }
-
-        const dropzone = document.getElementById('dropzone');
-        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-        dropzone.addEventListener('drop', e => {
-            e.preventDefault();
-            dropzone.classList.remove('dragover');
-            handleFiles(e.dataTransfer.files);
-        });
-
-        function del(name, isDir) {
-            if (!confirm(`Удалить ${name}?`)) return;
-            const path = (currentDir === '/' ? '' : currentDir) + '/' + name;
-            fetch(`/api/delete?path=${path}&isDir=${isDir}`, { method: 'POST' }).then(loadFiles);
-        }
-
-        function rename(oldName) {
-            const newName = prompt("Новое имя файла:", oldName);
-            if (!newName) return;
-            const oldPath = (currentDir === '/' ? '' : currentDir) + '/' + oldName;
-            const newPath = (currentDir === '/' ? '' : currentDir) + '/' + newName;
-            fetch(`/api/rename?old=${oldPath}&new=${newPath}`, { method: 'POST' }).then(loadFiles);
-        }
-
-        function move(name) {
-            const newPath = prompt("Новый путь (например, /folder/file.gcode):", "/" + name);
-            if (!newPath) return;
-            const oldPath = (currentDir === '/' ? '' : currentDir) + '/' + name;
-            fetch(`/api/rename?old=${oldPath}&new=${newPath}`, { method: 'POST' }).then(loadFiles);
-        }
-
-        function mkdir() {
-            const name = prompt("Имя новой папки:");
-            if (!name) return;
-            const path = (currentDir === '/' ? '' : currentDir) + '/' + name;
-            fetch(`/api/mkdir?path=${path}`, { method: 'POST' }).then(loadFiles);
-        }
-
-        window.onload = loadFiles;
-    </script>
-</body>
-</html>
-)rawliteral";
-
-void loadConfig() {
-    if (SD.exists("/SETUP.INI")) {
-        File f = SD.open("/SETUP.INI", FILE_READ);
-        bool inWifiSection = false;
-        while (f.available()) {
-            String line = f.readStringUntil('\n');
-            line.trim();
-            if (line == "[WIFI]") {
-                inWifiSection = true;
-            } else if (inWifiSection && line.startsWith("SSID=")) {
-                currentSSID = line.substring(5);
-            } else if (inWifiSection && line.startsWith("PASSWORD=")) {
-                currentPASS = line.substring(9);
-            } else if (line.startsWith("[")) {
-                inWifiSection = false;
-            }
-        }
-        f.close();
-        Serial.println("Config loaded.");
+void parseSetupIni(String &ssid, String &pass) {
+  File f = SD.open("/SETUP.INI", "r");
+  if (!f) return;
+  
+  bool inWifi = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.equalsIgnoreCase("[WIFI]")) { inWifi = true; continue; }
+    if (line.startsWith("[")) inWifi = false;
+    
+    if (inWifi) {
+      if (line.startsWith("SSID=")) ssid = line.substring(5);
+      if (line.startsWith("PASSWORD=")) pass = line.substring(9);
     }
+  }
+  f.close();
 }
 
-String getContentType(String filename) {
-    if (filename.endsWith(".html")) return "text/html";
-    else if (filename.endsWith(".css")) return "text/css";
-    else if (filename.endsWith(".js")) return "application/javascript";
-    else if (filename.endsWith(".png")) return "image/png";
-    else if (filename.endsWith(".jpg")) return "image/jpeg";
-    return "text/plain";
+void handleThumbnail() {
+  String path = server.arg("path");
+  if (path.endsWith(".gcode") || path.endsWith(".GCODE")) {
+    String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
+    if (SD.exists(thumbPath)) { server.sendStream(SD.open(thumbPath, "r"), "image/jpeg"); return; }
+    thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
+    if (SD.exists(thumbPath)) { server.sendStream(SD.open(thumbPath, "r"), "image/png"); return; }
+  }
+  
+  if (SD.exists("/logo.jpg")) { server.sendStream(SD.open("/logo.jpg", "r"), "image/jpeg"); return; }
+  if (SD.exists("/logo.png")) { server.sendStream(SD.open("/logo.png", "r"), "image/png"); return; }
+  
+  server.sendHeader("Location", placeholderImg, true);
+  server.send(302, "text/plain", "");
 }
 
-bool serveFile(String path) {
-    if (!SD.exists(path)) return false;
-    File file = SD.open(path, FILE_READ);
-    if (!file || file.isDirectory()) return false;
-    server.streamFile(file, getContentType(path));
-    file.close();
-    return true;
+void handleList() {
+  String dir = server.arg("dir");
+  if (dir == "") dir = "/";
+  if (!dir.startsWith("/")) dir = "/" + dir;
+  if (!SD.exists(dir) || !SD.open(dir, "r").isDirectory()) {
+    server.send(400, "application/json", "{\"error\":\"Dir not found\"}");
+    return;
+  }
+
+  String json = "[";
+  File d = SD.open(dir, "r");
+  File f = d.openNextFile();
+  while (f) {
+    if (json != "[") json += ",";
+    json += "{\"name\":\"" + String(f.name()) + "\",\"size\":" + String(f.size()) + ",\"isDir\":" + String(f.isDirectory() ? "true" : "false") + "}";
+    f = d.openNextFile();
+  }
+  f.close();
+  d.close();
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void handleFileAction() {
+  if (server.hasArg("plain") == false) { server.send(400, "text/plain", "No body"); return; }
+  String body = server.arg("plain");
+  
+  String action = server.arg("action");
+  String path1 = server.arg("path1");
+  String path2 = server.arg("path2");
+
+  if (action == "delete") {
+    if (SD.exists(path1)) { SD.remove(path1); server.send(200, "text/plain", "OK"); }
+    else server.send(404, "text/plain", "Not found");
+  } 
+  else if (action == "mkdir") {
+    if (SD.mkdir(path1)) server.send(200, "text/plain", "OK");
+    else server.send(500, "text/plain", "Failed");
+  }
+  else if (action == "rename" || action == "move") {
+    if (SD.exists(path1) && SD.rename(path1, path2)) server.send(200, "text/plain", "OK");
+    else server.send(500, "text/plain", "Failed");
+  } else {
+    server.send(400, "text/plain", "Unknown action");
+  }
+}
+
+void handleDownload() {
+  String path = server.arg("path");
+  if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
+  File download = SD.open(path, "r");
+  String contentType = "application/octet-stream";
+  if (path.endsWith(".html")) contentType = "text/html";
+  else if (path.endsWith(".jpg")) contentType = "image/jpeg";
+  else if (path.endsWith(".png")) contentType = "image/png";
+  server.sendStream(download, contentType, download.size());
+}
+
+void handleUpload() {
+  HTTPUpload& upload = server.upload();
+  static File uploadFile;
+  String path = server.arg("path");
+  if (path == "") path = "/" + upload.filename;
+  else if (!path.endsWith("/")) path += "/";
+  path += upload.filename;
+
+  if (upload.status == UPLOAD_FILE_START) {
+    uploadFile = SD.open(path, "w");
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (uploadFile) uploadFile.close();
+  }
+}
+
+void handleRoot() {
+  if (hasCustomIndex) {
+    File idx = SD.open("/index.html", "r");
+    server.sendStream(idx, "text/html", idx.size());
+  } else {
+    server.send(200, "text/html", fallback_html);
+  }
 }
 
 void setup() {
-    Serial.begin(115200);
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH); // Выключаем светодиод
+  pinMode(LED_PIN, OUTPUT);
+  Serial.begin(115200);
+  delay(1000);
 
-    // Пин для проверки, не использует ли сейчас принтер SD-карту
-    pinMode(CS_SENSE, INPUT_PULLUP);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD Card Mount Failed!");
+    while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); } // Blink fast on error
+  }
 
-    // Подготовка пина выбора чипа SD
-    pinMode(SD_CS, OUTPUT);
-    digitalWrite(SD_CS, HIGH);
-    
-    // Инициализация стандартного аппаратного SPI (пины 12, 13, 14 используются автоматически)
-    SPI.begin();
-    delay(100); // Даем карте время на "пробуждение"
+  hasCustomIndex = SD.exists("/index.html");
 
-    // Проверяем, не занята ли шина принтером (CS_SENSE)
-    if (digitalRead(CS_SENSE) == LOW) {
-        Serial.println("Warning: Marlin is currently using the SD card!");
+  String ssid = "sd-card-3dp";
+  String pass = "12345678";
+  parseSetupIni(ssid, pass);
+
+  if (ssid != "sd-card-3dp") {
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int timeout = 20;
+    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+      delay(500); Serial.print("."); timeout--;
     }
+  }
 
-    // Инициализация SD
-    bool sd_mounted = SD.begin(SD_CS);
-    if (!sd_mounted) {
-        Serial.println("SD Card Mount Failed! Check FAT32 format and printer state.");
-        // Не делаем return; идем дальше, чтобы хотя бы поднять Wi-Fi
-    } else {
-        Serial.println("SD Card Mounted successfully!");
-        loadConfig();
-    }
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.softAP("sd-card-3dp", "12345678");
+    Serial.println("\nStarted AP mode");
+  } else {
+    Serial.println("\nConnected to WiFi!");
+  }
+  
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
 
-    // Попытка STA (подключение к роутеру)
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(currentSSID.c_str(), currentPASS.c_str());
-    Serial.print("Connecting to WiFi");
-    
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 20) {
-        delay(500);
-        Serial.print(".");
-        retries++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
-    } else {
-        // Fallback AP (Режим точки доступа)
-        Serial.println("\nWiFi failed. Starting AP.");
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP("sd-card-3dp", "12345678");
-        Serial.println("AP IP: " + WiFi.softAPIP().toString());
-    }
-
-    digitalWrite(LED_PIN, LOW); // Включаем светодиод (устройство готово)
-
-    // Если SD не смонтировалась, на все запросы отдаем ошибку 
-    if (!sd_mounted) {
-        server.onNotFound([]() {
-            server.send(500, "text/plain", "SD Card Mount Failed. Format to FAT32 or turn off printer access.");
-        });
-        server.begin();
-        return;
-    }
-
-    // --- МАРШРУТЫ (остаются те же самые) ---
-    server.on("/", HTTP_GET, []() {
-        if (!serveFile("/index.html")) {
-            server.send_P(200, "text/html", fallback_html);
-        }
-    });
-
-    server.on("/api/list", HTTP_GET, []() {
-        String dirPath = server.hasArg("dir") ? server.arg("dir") : "/";
-        File dir = SD.open(dirPath);
-        DynamicJsonDocument doc(2048);
-        JsonArray array = doc.to<JsonArray>();
-
-        while (true) {
-            File entry = dir.openNextFile();
-            if (!entry) break;
-            JsonObject obj = array.createNestedObject();
-            obj["name"] = String(entry.name());
-            obj["isDir"] = entry.isDirectory();
-            if (!entry.isDirectory()) obj["size"] = entry.size();
-            entry.close();
-        }
-        dir.close();
-        String response;
-        serializeJson(doc, response);
-        server.send(200, "application/json", response);
-    });
-
-    server.on("/api/upload", HTTP_POST, []() {
-        server.send(200, "text/plain", "OK");
-    }, []() {
-        HTTPUpload& upload = server.upload();
-        if (upload.status == UPLOAD_FILE_START) {
-            String filename = upload.filename;
-            if (!filename.startsWith("/")) filename = "/" + filename;
-            if (SD.exists(filename)) SD.remove(filename);
-            fsUploadFile = SD.open(filename, FILE_WRITE);
-        } else if (upload.status == UPLOAD_FILE_WRITE) {
-            if (fsUploadFile) fsUploadFile.write(upload.buf, upload.currentSize);
-        } else if (upload.status == UPLOAD_FILE_END) {
-            if (fsUploadFile) fsUploadFile.close();
-        }
-    });
-
-    server.on("/api/delete", HTTP_POST, []() {
-        String path = server.arg("path");
-        bool isDir = server.arg("isDir") == "true";
-        bool res = isDir ? SD.rmdir(path) : SD.remove(path);
-        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
-    });
-
-    server.on("/api/rename", HTTP_POST, []() {
-        String oldPath = server.arg("old");
-        String newPath = server.arg("new");
-        bool res = SD.rename(oldPath, newPath);
-        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
-    });
-
-    server.on("/api/mkdir", HTTP_POST, []() {
-        String path = server.arg("path");
-        bool res = SD.mkdir(path);
-        server.send(res ? 200 : 500, "text/plain", res ? "OK" : "Error");
-    });
-
-    server.on("/api/thumb", HTTP_GET, []() {
-        String file = server.arg("file"); 
-        int dot = file.lastIndexOf('.');
-        String base = (dot > 0) ? file.substring(0, dot) : file;
-        
-        String jpgPath = base + ".jpg";
-        String pngPath = base + ".png";
-        
-        if (serveFile(jpgPath)) return;
-        if (serveFile(pngPath)) return;
-        if (serveFile("/logo.jpg")) return;
-        if (serveFile("/logo.png")) return;
-
-        String svg = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='300' height='300' fill='#ddd'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='20'>No preview</text></svg>";
-        server.send(200, "image/svg+xml", svg);
-    });
-
-    server.onNotFound([]() {
-        if (!serveFile(server.uri())) {
-            server.send(404, "text/plain", "Not Found");
-        }
-    });
-
-    server.begin();
-    Serial.println("HTTP server started");
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/thumb", HTTP_GET, handleThumbnail);
+  server.on("/api/list", HTTP_GET, handleList);
+  server.on("/api/action", HTTP_POST, handleFileAction);
+  server.on("/api/download", HTTP_GET, handleDownload);
+  server.on("/api/upload", HTTP_POST, [](){ server.send(200, "text/plain", "OK"); }, handleUpload);
+  
+  server.begin();
 }
 
 void loop() {
-    server.handleClient();
+  server.handleClient();
 }
+
+// ==========================================
+// FALLBACK WEB INTERFACE (Optimized for 1MB ESP8285)
+// ==========================================
+const char fallback_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SD File Manager</title>
+<style>
+body{font-family:sans-serif;background:#f4f4f4;margin:0;padding:20px}
+.toolbar{background:#fff;padding:15px;border-radius:8px;margin-bottom:20px;display:flex;gap:10px;align-items:center;box-shadow:0 2px 5px rgba(0,0,0,0.1)}
+button{padding:8px 15px;border:none;border-radius:5px;cursor:pointer;background:#0275d8;color:#fff}
+button:hover{background:#025aa5}
+input[type=text]{padding:8px;border:1px solid #ccc;border-radius:5px;flex:1}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px}
+.card{background:#fff;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1);overflow:hidden;position:relative}
+.card img{width:100%;height:200px;object-fit:cover;background:#eee;display:block}
+.card .info{padding:10px;word-break:break-all;font-size:14px}
+.card .actions{position:absolute;top:5px;right:5px;display:none;background:rgba(255,255,255,0.8);padding:5px;border-radius:5px}
+.card:hover .actions{display:block}
+.actions button{background:#dc3545;padding:5px;margin:2px;font-size:12px}
+.dropzone{border:2px dashed #ccc;border-radius:8px;padding:40px;text-align:center;color:#666;margin-bottom:20px;display:none}
+.progress{width:100%;background:#ddd;height:10px;border-radius:5px;margin-top:10px;display:none}
+.progress div{height:100%;background:#0275d8;width:0%;transition:width 0.3s}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center}
+.modal-content{background:#fff;padding:20px;border-radius:8px;min-width:300px}
+.dir-link{color:#0275d8;text-decoration:none;cursor:pointer;font-weight:bold;display:inline-block;margin-bottom:10px}
+</style>
+</head><body>
+<div class="toolbar">
+  <span class="dir-link" onclick="navigate('/')" style="margin-right:10px">/</span>
+  <span id="breadcrumb" class="dir-link"></span>
+  <div style="flex:1"></div>
+  <button onclick="showModal('mkdir')">Создать папку</button>
+  <button onclick="document.getElementById('fileInput').click()">Загрузить файл</button>
+  <input type="file" id="fileInput" multiple style="display:none" onchange="uploadFiles(this.files)">
+</div>
+<div id="dropzone" class="dropzone" ondrop="dropHandler(event)" ondragover="event.preventDefault()" ondragleave="this.style.display='none'">Перетащите файлы сюда для загрузки</div>
+<div class="progress" id="progressBar"><div id="progress"></div></div>
+<div class="grid" id="fileGrid"></div>
+
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <h3 id="modalTitle">Действие</h3>
+    <input type="hidden" id="modalAction">
+    <input type="hidden" id="modalOldPath">
+    <input type="text" id="modalInput" style="width:100%;margin:10px 0;box-sizing:border-box">
+    <div style="text-align:right">
+      <button onclick="closeModal()" style="background:#ccc;color:#000">Отмена</button>
+      <button onclick="submitModal()">Ок</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentPath = '/';
+const placeholder = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+document.addEventListener('dragover', e => { e.preventDefault(); document.getElementById('dropzone').style.display='block'; });
+document.addEventListener('drop', e => { e.preventDefault(); document.getElementById('dropzone').style.display='none'; if(e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); });
+
+function loadFiles() {
+  document.getElementById('breadcrumb').innerText = currentPath !== '/' ? currentPath : '';
+  fetch('/api/list?dir=' + currentPath).then(r=>r.json()).then(files => {
+    const grid = document.getElementById('fileGrid');
+    grid.innerHTML = '';
+    files.sort((a,b) => (a.isDir === b.isDir) ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1 );
+    
+    files.forEach(f => {
+      const fullPath = currentPath === '/' ? '/' + f.name : currentPath + '/' + f.name;
+      const card = document.createElement('div');
+      card.className = 'card';
+      
+      let imgSrc = placeholder;
+      if (!f.isDir) {
+         if (f.name.toLowerCase().endsWith('.gcode')) imgSrc = '/thumb?path=' + fullPath;
+         else if (f.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|bmp)$/)) imgSrc = '/api/download?path=' + fullPath;
+      } else {
+         imgSrc = placeholder; // folder icon could be here
+      }
+
+      card.innerHTML = `
+        <img src="${imgSrc}" onerror="this.src='${placeholder}'">
+        <div class="info">
+          <div style="font-weight:bold;cursor:pointer" onclick="${f.isDir ? `navigate('${fullPath}')` : `window.open('/api/download?path=${fullPath}')`}">${f.name}</div>
+          <div style="font-size:12px;color:#666">${f.isDir ? 'Папка' : (f.size/1024).toFixed(2)+' KB'}</div>
+        </div>
+        <div class="actions">
+          ${!f.isDir ? `<button onclick="window.open('/api/download?path=${fullPath}')">⬇</button>` : ''}
+          <button onclick="showModal('rename', '${fullPath}', '${f.name}')">✏️</button>
+          <button onclick="showModal('move', '${fullPath}', '${f.name}')">📦</button>
+          <button onclick="apiAction('delete', '${fullPath}')">🗑</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+  });
+}
+
+function navigate(path) {
+  currentPath = path;
+  loadFiles();
+}
+
+function uploadFiles(files) {
+  const pb = document.getElementById('progressBar');
+  const p = document.getElementById('progress');
+  pb.style.display = 'block';
+  p.style.width = '0%';
+  
+  let completed = 0;
+  for(let i=0; i<files.length; i++) {
+    let xhr = new XMLHttpRequest();
+    let fd = new FormData();
+    fd.append('file', files[i]);
+    xhr.open('POST', '/api/upload?path=' + currentPath, true);
+    xhr.upload.onprogress = e => {
+      if(e.lengthComputable) p.style.width = ((completed + e.loaded/e.total) / files.length * 100) + '%';
+    };
+    xhr.onload = () => {
+      completed++;
+      p.style.width = (completed / files.length * 100) + '%';
+      if(completed === files.length) { setTimeout(() => { pb.style.display='none'; loadFiles(); }, 500); }
+    };
+    xhr.send(fd);
+  }
+}
+
+function apiAction(action, path1, path2) {
+  fetch('/api/action?action=' + action + '&path1=' + encodeURIComponent(path1) + '&path2=' + encodeURIComponent(path2||''), {method:'POST'})
+  .then(r => { if(r.ok) loadFiles(); else alert('Ошибка'); });
+}
+
+function showModal(type, oldPath, name) {
+  document.getElementById('modal').style.display = 'flex';
+  document.getElementById('modalAction').value = type;
+  document.getElementById('modalOldPath').value = oldPath || '';
+  const inp = document.getElementById('modalInput');
+  
+  if(type === 'mkdir') {
+    document.getElementById('modalTitle').innerText = 'Новая папка';
+    inp.value = '';
+  } else if(type === 'rename') {
+    document.getElementById('modalTitle').innerText = 'Переименовать';
+    inp.value = name;
+  } else if(type === 'move') {
+    document.getElementById('modalTitle').innerText = 'Переместить в (полный путь)';
+    inp.value = currentPath;
+  }
+}
+
+function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+function submitModal() {
+  const action = document.getElementById('modalAction').value;
+  const oldPath = document.getElementById('modalOldPath').value;
+  const val = document.getElementById('modalInput').value;
+  
+  if(!val) return;
+  
+  if(action === 'mkdir') {
+    let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val;
+    apiAction('mkdir', newPath);
+  } else if(action === 'rename') {
+    let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val;
+    apiAction('rename', oldPath, newPath);
+  } else if(action === 'move') {
+    let fileName = oldPath.split('/').pop();
+    let newPath = val.endsWith('/') ? val + fileName : val + '/' + fileName;
+    apiAction('move', oldPath, newPath);
+  }
+  closeModal();
+}
+
+loadFiles();
+</script>
+</body></html>
+)rawliteral";
