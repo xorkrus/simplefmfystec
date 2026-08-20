@@ -9,27 +9,15 @@
 #include <SD.h>
 
 // Pin definitions
-#ifndef SD_CS
 #define SD_CS     4
-#endif
-#ifndef MISO_PIN
 #define MISO_PIN  12
-#endif
-#ifndef MOSI_PIN
 #define MOSI_PIN  13
-#endif
-#ifndef SCLK_PIN
 #define SCLK_PIN  14
-#endif
-#ifndef LED_PIN
 #define LED_PIN   2
-#endif
-#ifndef HTTP_PORT
 #define HTTP_PORT 80
-#endif
 
 #define DEFAULT_SSID      "xopkland"
-#define DEFAULT_PASSWORD  "00000000000000000000"
+#define DEFAULT_PASSWORD  "1234567890987654321"
 #define AP_SSID           "sd-card-3dp"
 #define AP_PASSWORD       "12345678"
 
