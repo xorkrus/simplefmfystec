@@ -9,19 +9,24 @@
 #include <SD.h>
 
 // Pin definitions
-#define SD_CS     4
-#define MISO_PIN  12
-#define MOSI_PIN  13
-#define SCLK_PIN  14
-#define LED_PIN   2
+#define SD_CS 4
+#define MISO_PIN 12
+#define MOSI_PIN 13
+#define SCLK_PIN 14
+#define LED_PIN 2
+
 #define HTTP_PORT 80
 
-#define DEFAULT_SSID      "xopkland"
-#define DEFAULT_PASSWORD  "1234567890987654321"
-#define AP_SSID           "sd-card-3dp"
-#define AP_PASSWORD       "12345678"
+#define DEFAULT_SSID "xopkland"
+#define DEFAULT_PASSWORD "1234567890987654321"
+#define AP_SSID "sd-card-3dp"
+#define AP_PASSWORD "12345678"
+
+#define MAX_UPLOAD_SIZE (500UL * 1024 * 1024) // 500 MB
+#define MIN_FREE_SPACE (10UL * 1024 * 1024)   // 10 MB minimum free space
 
 ESP8266WebServer server(HTTP_PORT);
+
 String wifiSSID = "";
 String wifiPassword = "";
 bool apMode = false;
@@ -45,14 +50,23 @@ void handleNotFound();
 String getContentType(String filename);
 String urlDecode(String input);
 void sendDefaultThumbnail();
+bool isValidPath(const String& path);
+bool isPathSafe(const String& path);
+uint32_t getFreeSpace();
 
 #include "html.h"
 
 void setup() {
     Serial.begin(115200);
     delay(100);
+    
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+    
+    // GPIO15 must be LOW for SD card to work on ESP8266
+    pinMode(15, OUTPUT);
+    digitalWrite(15, LOW);
+    
     initSDCard();
     parseSetupIni();
     connectToWiFi();
@@ -70,6 +84,7 @@ void setup() {
     
     server.begin();
     Serial.println("HTTP server started");
+    
     digitalWrite(LED_PIN, HIGH);
 }
 
@@ -79,12 +94,47 @@ void loop() {
 }
 
 void initSDCard() {
+    // Initialize SPI with proper settings for SD card
     SPI.pins(SCLK_PIN, MISO_PIN, MOSI_PIN, SD_CS);
-    if (!SD.begin(SD_CS)) {
+    SPI.beginTransaction(SPISettings(25000000, MSBFIRST, SPI_MODE0));
+    
+    // Try multiple times with different speeds
+    bool sdInitialized = false;
+    uint32_t speeds[] = {400000, 1000000, 4000000, 25000000};
+    
+    for (int i = 0; i < 4 && !sdInitialized; i++) {
+        SPI.endTransaction();
+        SPI.beginTransaction(SPISettings(speeds[i], MSBFIRST, SPI_MODE0));
+        
+        if (SD.begin(SD_CS)) {
+            sdInitialized = true;
+            Serial.print("SD card initialized at ");
+            Serial.print(speeds[i]);
+            Serial.println(" Hz");
+        } else {
+            Serial.print("Failed at ");
+            Serial.print(speeds[i]);
+            Serial.println(" Hz, trying slower...");
+            delay(100);
+        }
+    }
+    
+    SPI.endTransaction();
+    
+    if (!sdInitialized) {
         Serial.println("SD card initialization failed!");
         return;
     }
-    Serial.println("SD card initialized.");
+    
+    // Verify SD card is accessible
+    File testFile = SD.open("/test.tmp", FILE_WRITE);
+    if (testFile) {
+        testFile.close();
+        SD.remove("/test.tmp");
+        Serial.println("SD card verified successfully.");
+    } else {
+        Serial.println("SD card initialized but not writable!");
+    }
 }
 
 void parseSetupIni() {
@@ -95,33 +145,57 @@ void parseSetupIni() {
         wifiPassword = DEFAULT_PASSWORD;
         return;
     }
+    
     String line;
     bool inWifiSection = false;
+    
     while (setupFile.available()) {
         line = setupFile.readStringUntil('\n');
         line.trim();
-        if (line.startsWith("[WIFI]")) { inWifiSection = true; continue; }
-        if (line.startsWith("[") && !line.startsWith("[WIFI]")) { inWifiSection = false; continue; }
+        
+        if (line.startsWith("[WIFI]")) { 
+            inWifiSection = true; 
+            continue; 
+        }
+        if (line.startsWith("[") && !line.startsWith("[WIFI]")) { 
+            inWifiSection = false; 
+            continue; 
+        }
+        
         if (inWifiSection) {
-            if (line.startsWith("SSID=")) { wifiSSID = line.substring(5); wifiSSID.trim(); }
-            else if (line.startsWith("PASSWORD=")) { wifiPassword = line.substring(9); wifiPassword.trim(); }
+            if (line.startsWith("SSID=")) { 
+                wifiSSID = line.substring(5); 
+                wifiSSID.trim(); 
+            } else if (line.startsWith("PASSWORD=")) { 
+                wifiPassword = line.substring(9); 
+                wifiPassword.trim(); 
+            }
         }
     }
+    
     setupFile.close();
-    Serial.print("WiFi SSID: "); Serial.println(wifiSSID);
+    Serial.print("WiFi SSID: "); 
+    Serial.println(wifiSSID);
 }
 
 void connectToWiFi() {
-    Serial.print("Connecting to WiFi: "); Serial.println(wifiSSID);
+    Serial.print("Connecting to WiFi: "); 
+    Serial.println(wifiSSID);
+    
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+    
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-        delay(500); Serial.print("."); attempts++;
+        delay(500);
+        Serial.print(".");
+        attempts++;
     }
+    
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nWiFi connected!");
-        Serial.print("IP address: "); Serial.println(WiFi.localIP());
+        Serial.print("IP address: "); 
+        Serial.println(WiFi.localIP());
     } else {
         Serial.println("\nWiFi failed, starting AP mode");
         startAPMode();
@@ -132,9 +206,14 @@ void startAPMode() {
     apMode = true;
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    Serial.print("AP Mode: "); Serial.print(AP_SSID);
-    Serial.print(" Pass: "); Serial.println(AP_PASSWORD);
-    Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
+    
+    Serial.print("AP Mode: "); 
+    Serial.print(AP_SSID);
+    Serial.print(" Pass: "); 
+    Serial.println(AP_PASSWORD);
+    Serial.print("AP IP: "); 
+    Serial.println(WiFi.softAPIP());
+    
     for (int i = 0; i < 5; i++) {
         digitalWrite(LED_PIN, !digitalRead(LED_PIN));
         delay(200);
@@ -142,10 +221,43 @@ void startAPMode() {
     digitalWrite(LED_PIN, HIGH);
 }
 
+bool isValidPath(const String& path) {
+    if (path.isEmpty()) return false;
+    if (!path.startsWith("/")) return false;
+    return true;
+}
+
+bool isPathSafe(const String& path) {
+    // Prevent path traversal and invalid paths
+    if (path.contains("..")) return false;
+    if (path.contains("//")) return false;
+    if (path.length() > 255) return false;
+    return true;
+}
+
+uint32_t getFreeSpace() {
+    FATFS* fs;
+    DWORD fre_clust, fre_sect, tot_sect;
+    
+    // Get volume information and free clusters
+    FRESULT res = f_getfree("", &fre_clust, &fs);
+    if (res != FR_OK) return 0;
+    
+    // Calculate free space in bytes
+    fre_sect = (DWORD)fre_clust * fs->csize;
+    tot_sect = ((DWORD)(fs->n_fatent - 2) * fs->csize);
+    
+    return (uint32_t)fre_sect * 512;
+}
+
 void handleRoot() {
     if (SD.exists("/index.html")) {
         File file = SD.open("/index.html", FILE_READ);
-        if (file) { server.streamFile(file, "text/html"); file.close(); return; }
+        if (file) {
+            server.streamFile(file, "text/html");
+            file.close();
+            return;
+        }
     }
     server.send(200, "text/html", fallbackHTML);
 }
@@ -153,17 +265,33 @@ void handleRoot() {
 void handleListDir() {
     String path = server.arg("path");
     if (path.isEmpty()) path = "/";
-    if (!SD.exists(path)) { server.send(404, "application/json", "{\"error\":\"Path not found\"}"); return; }
+    
+    if (!isValidPath(path) || !isPathSafe(path)) {
+        server.send(400, "application/json", "{\"error\":\"Invalid path\"}");
+        return;
+    }
+    
+    if (!SD.exists(path)) {
+        server.send(404, "application/json", "{\"error\":\"Path not found\"}");
+        return;
+    }
+    
     File dir = SD.open(path, FILE_READ);
-    if (!dir || !dir.isDirectory()) { server.send(400, "application/json", "{\"error\":\"Not a directory\"}"); return; }
+    if (!dir || !dir.isDirectory()) {
+        server.send(400, "application/json", "{\"error\":\"Not a directory\"}");
+        return;
+    }
+    
     String json = "{\"dirs\":[";
     String files = "";
     bool firstDir = true;
+    
     File entry = dir.openNextFile();
     while (entry) {
         String name = entry.name();
         int lastSlash = name.lastIndexOf('/');
         if (lastSlash >= 0) name = name.substring(lastSlash + 1);
+        
         if (entry.isDirectory()) {
             if (!firstDir) json += ",";
             json += "\"" + name + "\"";
@@ -176,60 +304,163 @@ void handleListDir() {
         entry = dir.openNextFile();
     }
     dir.close();
+    
     json += "],\"files\":[" + files + "]}";
     server.send(200, "application/json", json);
 }
 
 void handleDeleteFile() {
     String path = "/" + urlDecode(server.arg("path"));
-    if (path.startsWith("//")) path = path.substring(1);
-    if (path.endsWith("/") && path.length() > 1) path = path.substring(0, path.length() - 1);
-    if (SD.exists(path)) {
-        if (SD.rmdir(path) || SD.remove(path)) server.send(200, "text/plain", "Deleted");
-        else server.send(500, "text/plain", "Delete failed");
-    } else server.send(404, "text/plain", "Not found");
+    
+    // Normalize path
+    while (path.startsWith("//")) path = path.substring(1);
+    if (path.endsWith("/") && path.length() > 1) {
+        path = path.substring(0, path.length() - 1);
+    }
+    
+    // Validate path
+    if (!isValidPath(path) || !isPathSafe(path)) {
+        server.send(400, "text/plain", "Invalid path");
+        return;
+    }
+    
+    // Prevent deletion of root directory
+    if (path == "/") {
+        server.send(403, "text/plain", "Cannot delete root directory");
+        return;
+    }
+    
+    // Check if path exists
+    if (!SD.exists(path)) {
+        server.send(404, "text/plain", "Not found");
+        return;
+    }
+    
+    // Try to delete
+    bool deleted = false;
+    if (SD.remove(path)) {
+        deleted = true;
+    } else {
+        // Try as directory
+        deleted = SD.rmdir(path);
+    }
+    
+    if (deleted) {
+        server.send(200, "text/plain", "Deleted");
+    } else {
+        server.send(500, "text/plain", "Delete failed");
+    }
 }
 
 void handleRenameFile() {
     String oldPath = "/" + urlDecode(server.arg("old"));
     String newPath = "/" + urlDecode(server.arg("new"));
-    if (oldPath.startsWith("//")) oldPath = oldPath.substring(1);
-    if (newPath.startsWith("//")) newPath = newPath.substring(1);
-    if (!SD.exists(oldPath)) { server.send(404, "text/plain", "Source not found"); return; }
-    if (SD.rename(oldPath, newPath)) server.send(200, "text/plain", "Renamed");
-    else server.send(500, "text/plain", "Rename failed");
+    
+    // Normalize paths
+    while (oldPath.startsWith("//")) oldPath = oldPath.substring(1);
+    while (newPath.startsWith("//")) newPath = newPath.substring(1);
+    
+    // Validate paths
+    if (!isValidPath(oldPath) || !isValidPath(newPath) || 
+        !isPathSafe(oldPath) || !isPathSafe(newPath)) {
+        server.send(400, "text/plain", "Invalid path");
+        return;
+    }
+    
+    if (!SD.exists(oldPath)) {
+        server.send(404, "text/plain", "Source not found");
+        return;
+    }
+    
+    if (SD.rename(oldPath, newPath)) {
+        server.send(200, "text/plain", "Renamed");
+    } else {
+        server.send(500, "text/plain", "Rename failed");
+    }
 }
 
 void handleMoveFile() {
     String src = "/" + urlDecode(server.arg("src"));
     String dst = "/" + urlDecode(server.arg("dst"));
-    if (src.startsWith("//")) src = src.substring(1);
-    if (dst.startsWith("//")) dst = dst.substring(1);
-    if (!SD.exists(src)) { server.send(404, "text/plain", "Source not found"); return; }
+    
+    // Normalize paths
+    while (src.startsWith("//")) src = src.substring(1);
+    while (dst.startsWith("//")) dst = dst.substring(1);
+    
+    // Validate paths
+    if (!isValidPath(src) || !isValidPath(dst) || 
+        !isPathSafe(src) || !isPathSafe(dst)) {
+        server.send(400, "text/plain", "Invalid path");
+        return;
+    }
+    
+    if (!SD.exists(src)) {
+        server.send(404, "text/plain", "Source not found");
+        return;
+    }
+    
+    // Create destination directory if needed
     int lastSlash = dst.lastIndexOf('/');
     if (lastSlash > 0) {
         String destDir = dst.substring(0, lastSlash);
-        if (!SD.exists(destDir)) SD.mkdir(destDir);
+        if (!SD.exists(destDir)) {
+            SD.mkdir(destDir);
+        }
     }
-    if (SD.rename(src, dst)) server.send(200, "text/plain", "Moved");
-    else server.send(500, "text/plain", "Move failed");
+    
+    if (SD.rename(src, dst)) {
+        server.send(200, "text/plain", "Moved");
+    } else {
+        server.send(500, "text/plain", "Move failed");
+    }
 }
 
 void handleCreateDir() {
     String path = "/" + urlDecode(server.arg("path"));
-    if (path.startsWith("//")) path = path.substring(1);
-    if (SD.mkdir(path)) server.send(200, "text/plain", "Created");
-    else server.send(500, "text/plain", "Create failed");
+    
+    // Normalize path
+    while (path.startsWith("//")) path = path.substring(1);
+    
+    // Validate path
+    if (!isValidPath(path) || !isPathSafe(path)) {
+        server.send(400, "text/plain", "Invalid path");
+        return;
+    }
+    
+    if (SD.mkdir(path)) {
+        server.send(200, "text/plain", "Created");
+    } else {
+        server.send(500, "text/plain", "Create failed");
+    }
 }
 
 void handleDownload() {
     String path = "/" + urlDecode(server.arg("file"));
-    if (path.startsWith("//")) path = path.substring(1);
-    if (!SD.exists(path)) { server.send(404, "text/plain", "File not found"); return; }
+    
+    // Normalize path
+    while (path.startsWith("//")) path = path.substring(1);
+    
+    // Validate path
+    if (!isValidPath(path) || !isPathSafe(path)) {
+        server.send(400, "text/plain", "Invalid path");
+        return;
+    }
+    
+    if (!SD.exists(path)) {
+        server.send(404, "text/plain", "File not found");
+        return;
+    }
+    
     File file = SD.open(path, FILE_READ);
-    if (!file) { server.send(500, "text/plain", "Cannot open file"); return; }
+    if (!file) {
+        server.send(500, "text/plain", "Cannot open file");
+        return;
+    }
+    
     String contentType = getContentType(path);
-    server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(path.substring(path.lastIndexOf('/') + 1)) + "\"");
+    String fileName = path.substring(path.lastIndexOf('/') + 1);
+    
+    server.sendHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
     server.streamFile(file, contentType);
     file.close();
 }
@@ -237,38 +468,123 @@ void handleDownload() {
 void handleUpload() {
     static File fsUploadFile;
     static String uploadPath;
+    static uint32_t totalUploaded = 0;
+    
     HTTPUpload& upload = server.upload();
+    
     if (upload.status == UPLOAD_FILE_START) {
         uploadPath = server.arg("path");
         if (uploadPath.isEmpty()) uploadPath = "/";
+        
+        // Validate path
+        if (!isValidPath(uploadPath) || !isPathSafe(uploadPath)) {
+            server.send(400, "text/plain", "Invalid path");
+            return;
+        }
+        
         String filename = uploadPath;
         if (!filename.endsWith("/")) filename += "/";
         filename += upload.filename;
+        
+        // Normalize path
         while (filename.indexOf("//") >= 0) filename.replace("//", "/");
         if (!filename.startsWith("/")) filename = "/" + filename;
-        Serial.print("Upload: "); Serial.println(filename);
+        
+        // Check free space before starting upload
+        uint32_t freeSpace = getFreeSpace();
+        if (freeSpace < MIN_FREE_SPACE) {
+            server.send(507, "text/plain", "Insufficient free space");
+            return;
+        }
+        
+        Serial.print("Upload: "); 
+        Serial.println(filename);
+        Serial.print("File size: "); 
+        Serial.println(upload.totalSize);
+        
+        // Check if file size exceeds limit
+        if (upload.totalSize > MAX_UPLOAD_SIZE) {
+            server.send(413, "text/plain", "File too large");
+            return;
+        }
+        
+        // Check if we have enough space for this specific file
+        if (upload.totalSize > freeSpace) {
+            server.send(507, "text/plain", "Not enough space for this file");
+            return;
+        }
+        
         fsUploadFile = SD.open(filename, FILE_WRITE);
+        totalUploaded = 0;
+        
+        if (!fsUploadFile) {
+            server.send(500, "text/plain", "Cannot create file");
+            return;
+        }
+        
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (fsUploadFile) fsUploadFile.write(upload.buf, upload.currentSize);
+        if (fsUploadFile) {
+            size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
+            totalUploaded += written;
+            
+            // Check if we're running out of space during upload
+            if (totalUploaded > MAX_UPLOAD_SIZE) {
+                fsUploadFile.close();
+                SD.remove(uploadPath + "/" + upload.filename);
+                server.send(413, "text/plain", "File too large");
+                return;
+            }
+        }
+        
     } else if (upload.status == UPLOAD_FILE_END) {
-        if (fsUploadFile) { fsUploadFile.close(); Serial.println("Upload complete"); }
+        if (fsUploadFile) {
+            fsUploadFile.close();
+            Serial.println("Upload complete");
+            Serial.print("Total uploaded: ");
+            Serial.println(totalUploaded);
+        }
     }
 }
 
 void handleThumbnail() {
     String filePath = server.arg("file");
-    if (filePath == "default") { sendDefaultThumbnail(); return; }
+    
+    if (filePath == "default") {
+        sendDefaultThumbnail();
+        return;
+    }
+    
     filePath = "/" + urlDecode(filePath);
-    if (filePath.startsWith("//")) filePath = filePath.substring(1);
-    if (!SD.exists(filePath)) { sendDefaultThumbnail(); return; }
+    
+    // Normalize path
+    while (filePath.startsWith("//")) filePath = filePath.substring(1);
+    
+    // Validate path
+    if (!isValidPath(filePath) || !isPathSafe(filePath)) {
+        sendDefaultThumbnail();
+        return;
+    }
+    
+    if (!SD.exists(filePath)) {
+        sendDefaultThumbnail();
+        return;
+    }
+    
     String baseName = filePath;
     int dotPos = baseName.lastIndexOf('.');
     if (dotPos > 0) baseName = baseName.substring(0, dotPos);
+    
     String thumbPath;
-    if (SD.exists(baseName + ".jpg")) thumbPath = baseName + ".jpg";
-    else if (SD.exists(baseName + ".png")) thumbPath = baseName + ".png";
-    else if (SD.exists("/logo.jpg")) thumbPath = "/logo.jpg";
-    else if (SD.exists("/logo.png")) thumbPath = "/logo.png";
+    if (SD.exists(baseName + ".jpg")) {
+        thumbPath = baseName + ".jpg";
+    } else if (SD.exists(baseName + ".png")) {
+        thumbPath = baseName + ".png";
+    } else if (SD.exists("/logo.jpg")) {
+        thumbPath = "/logo.jpg";
+    } else if (SD.exists("/logo.png")) {
+        thumbPath = "/logo.png";
+    }
+    
     if (!thumbPath.isEmpty() && SD.exists(thumbPath)) {
         File thumb = SD.open(thumbPath, FILE_READ);
         if (thumb) {
@@ -278,6 +594,7 @@ void handleThumbnail() {
             return;
         }
     }
+    
     sendDefaultThumbnail();
 }
 
@@ -302,6 +619,7 @@ String getContentType(String filename) {
 String urlDecode(String input) {
     String decoded = "";
     char buffer[3];
+    
     for (unsigned int i = 0; i < input.length(); i++) {
         if (input[i] == '%') {
             if (i + 2 < input.length()) {
@@ -366,8 +684,5 @@ void sendDefaultThumbnail() {
     
     server.sendHeader("Content-Length", String(sizeof(placeholder)));
     server.sendHeader("Content-Type", "image/jpeg");
-    
-    for (size_t i = 0; i < sizeof(placeholder); i++) {
-        server.sendContent(String(pgm_read_byte_near(placeholder + i), HEX));
-    }
+    server.sendContent_P((const char*)placeholder, sizeof(placeholder));
 }
