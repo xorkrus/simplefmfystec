@@ -7,6 +7,7 @@
 #include <ESP8266WebServer.h>
 #include <SPI.h>
 #include <SD.h>
+#include <SdFat.h>
 
 // Pin definitions
 #define SD_CS 4
@@ -229,25 +230,23 @@ bool isValidPath(const String& path) {
 
 bool isPathSafe(const String& path) {
     // Prevent path traversal and invalid paths
-    if (path.contains("..")) return false;
-    if (path.contains("//")) return false;
+    if (path.indexOf("..") >= 0) return false;
+    if (path.indexOf("//") >= 0) return false;
     if (path.length() > 255) return false;
     return true;
 }
 
 uint32_t getFreeSpace() {
-    FATFS* fs;
-    DWORD fre_clust, fre_sect, tot_sect;
+    // Use SdFat library to get free space
+    SdVolume volume;
+    if (!volume.init(SD.card())) {
+        return 0;
+    }
     
-    // Get volume information and free clusters
-    FRESULT res = f_getfree("", &fre_clust, &fs);
-    if (res != FR_OK) return 0;
+    uint32_t clustersFree = volume.freeClusterCount();
+    uint32_t bytesPerCluster = volume.blocksPerCluster() * 512;
     
-    // Calculate free space in bytes
-    fre_sect = (DWORD)fre_clust * fs->csize;
-    tot_sect = ((DWORD)(fs->n_fatent - 2) * fs->csize);
-    
-    return (uint32_t)fre_sect * 512;
+    return clustersFree * bytesPerCluster;
 }
 
 void handleRoot() {
