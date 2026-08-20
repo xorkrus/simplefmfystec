@@ -1,7 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <SD.h>
-#include <FS.h>
+#include <SdFat.h> // Используем SdFat вместо стандартной SD.h
 
 // Pin definitions for FYSETC board
 #define SD_CS 4
@@ -10,6 +9,9 @@
 #define SCLK_PIN 14
 #define CS_SENSE 5
 #define LED_PIN 2
+
+// Создаем объект sd вместо стандартного SD
+SdFat sd;
 
 // Server
 ESP8266WebServer server(HTTP_PORT);
@@ -21,7 +23,7 @@ bool hasCustomIndex = false;
 const char placeholderImg[] PROGMEM = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 // ==========================================
-// FALLBACK WEB INTERFACE (Moved to top to fix scope error)
+// FALLBACK WEB INTERFACE
 // ==========================================
 const char fallback_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>SD File Manager</title>
@@ -115,31 +117,18 @@ function loadFiles() {
   });
 }
 
-function navigate(path) {
-  currentPath = path;
-  loadFiles();
-}
+function navigate(path) { currentPath = path; loadFiles(); }
 
 function uploadFiles(files) {
   const pb = document.getElementById('progressBar');
   const p = document.getElementById('progress');
-  pb.style.display = 'block';
-  p.style.width = '0%';
-  
+  pb.style.display = 'block'; p.style.width = '0%';
   let completed = 0;
   for(let i=0; i<files.length; i++) {
-    let xhr = new XMLHttpRequest();
-    let fd = new FormData();
-    fd.append('file', files[i]);
+    let xhr = new XMLHttpRequest(); let fd = new FormData(); fd.append('file', files[i]);
     xhr.open('POST', '/api/upload?path=' + currentPath, true);
-    xhr.upload.onprogress = e => {
-      if(e.lengthComputable) p.style.width = ((completed + e.loaded/e.total) / files.length * 100) + '%';
-    };
-    xhr.onload = () => {
-      completed++;
-      p.style.width = (completed / files.length * 100) + '%';
-      if(completed === files.length) { setTimeout(() => { pb.style.display='none'; loadFiles(); }, 500); }
-    };
+    xhr.upload.onprogress = e => { if(e.lengthComputable) p.style.width = ((completed + e.loaded/e.total) / files.length * 100) + '%'; };
+    xhr.onload = () => { completed++; p.style.width = (completed / files.length * 100) + '%'; if(completed === files.length) { setTimeout(() => { pb.style.display='none'; loadFiles(); }, 500); } };
     xhr.send(fd);
   }
 }
@@ -154,17 +143,9 @@ function showModal(type, oldPath, name) {
   document.getElementById('modalAction').value = type;
   document.getElementById('modalOldPath').value = oldPath || '';
   const inp = document.getElementById('modalInput');
-  
-  if(type === 'mkdir') {
-    document.getElementById('modalTitle').innerText = 'Новая папка';
-    inp.value = '';
-  } else if(type === 'rename') {
-    document.getElementById('modalTitle').innerText = 'Переименовать';
-    inp.value = name;
-  } else if(type === 'move') {
-    document.getElementById('modalTitle').innerText = 'Переместить в (полный путь)';
-    inp.value = currentPath;
-  }
+  if(type === 'mkdir') { document.getElementById('modalTitle').innerText = 'Новая папка'; inp.value = ''; }
+  else if(type === 'rename') { document.getElementById('modalTitle').innerText = 'Переименовать'; inp.value = name; }
+  else if(type === 'move') { document.getElementById('modalTitle').innerText = 'Переместить в (полный путь)'; inp.value = currentPath; }
 }
 
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
@@ -173,23 +154,12 @@ function submitModal() {
   const action = document.getElementById('modalAction').value;
   const oldPath = document.getElementById('modalOldPath').value;
   const val = document.getElementById('modalInput').value;
-  
   if(!val) return;
-  
-  if(action === 'mkdir') {
-    let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val;
-    apiAction('mkdir', newPath);
-  } else if(action === 'rename') {
-    let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val;
-    apiAction('rename', oldPath, newPath);
-  } else if(action === 'move') {
-    let fileName = oldPath.split('/').pop();
-    let newPath = val.endsWith('/') ? val + fileName : val + '/' + fileName;
-    apiAction('move', oldPath, newPath);
-  }
+  if(action === 'mkdir') { let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val; apiAction('mkdir', newPath); }
+  else if(action === 'rename') { let newPath = currentPath === '/' ? '/' + val : currentPath + '/' + val; apiAction('rename', oldPath, newPath); }
+  else if(action === 'move') { let fileName = oldPath.split('/').pop(); let newPath = val.endsWith('/') ? val + fileName : val + '/' + fileName; apiAction('move', oldPath, newPath); }
   closeModal();
 }
-
 loadFiles();
 </script>
 </body></html>
@@ -197,7 +167,7 @@ loadFiles();
 
 
 void parseSetupIni(String &ssid, String &pass) {
-  File f = SD.open("/SETUP.INI", "r");
+  File f = sd.open("/SETUP.INI", "r");
   if (!f) return;
   
   bool inWifi = false;
@@ -219,32 +189,28 @@ void handleThumbnail() {
   String path = server.arg("path");
   if (path.endsWith(".gcode") || path.endsWith(".GCODE")) {
     String thumbPath = path.substring(0, path.lastIndexOf('.')) + ".jpg";
-    if (SD.exists(thumbPath)) {
-      File f = SD.open(thumbPath, "r");
+    if (sd.exists(thumbPath)) {
+      File f = sd.open(thumbPath, "r");
       server.stream(f, "image/jpeg", HTTP_GET, f.size());
-      f.close();
-      return;
+      f.close(); return;
     }
     thumbPath = path.substring(0, path.lastIndexOf('.')) + ".png";
-    if (SD.exists(thumbPath)) {
-      File f = SD.open(thumbPath, "r");
+    if (sd.exists(thumbPath)) {
+      File f = sd.open(thumbPath, "r");
       server.stream(f, "image/png", HTTP_GET, f.size());
-      f.close();
-      return;
+      f.close(); return;
     }
   }
   
-  if (SD.exists("/logo.jpg")) {
-    File f = SD.open("/logo.jpg", "r");
+  if (sd.exists("/logo.jpg")) {
+    File f = sd.open("/logo.jpg", "r");
     server.stream(f, "image/jpeg", HTTP_GET, f.size());
-    f.close();
-    return;
+    f.close(); return;
   }
-  if (SD.exists("/logo.png")) {
-    File f = SD.open("/logo.png", "r");
+  if (sd.exists("/logo.png")) {
+    File f = sd.open("/logo.png", "r");
     server.stream(f, "image/png", HTTP_GET, f.size());
-    f.close();
-    return;
+    f.close(); return;
   }
   
   server.sendHeader("Location", FPSTR(placeholderImg), true);
@@ -256,7 +222,7 @@ void handleList() {
   if (dir == "") dir = "/";
   if (!dir.startsWith("/")) dir = "/" + dir;
   
-  File d = SD.open(dir, "r");
+  File d = sd.open(dir, "r");
   if (!d || !d.isDirectory()) {
     if(d) d.close();
     server.send(400, "application/json", "{\"error\":\"Dir not found\"}");
@@ -282,15 +248,15 @@ void handleFileAction() {
   String path2 = server.arg("path2");
 
   if (action == "delete") {
-    if (SD.exists(path1)) { SD.remove(path1); server.send(200, "text/plain", "OK"); }
+    if (sd.exists(path1)) { sd.remove(path1); server.send(200, "text/plain", "OK"); }
     else server.send(404, "text/plain", "Not found");
   } 
   else if (action == "mkdir") {
-    if (SD.mkdir(path1)) server.send(200, "text/plain", "OK");
+    if (sd.mkdir(path1)) server.send(200, "text/plain", "OK");
     else server.send(500, "text/plain", "Failed");
   }
   else if (action == "rename" || action == "move") {
-    if (SD.exists(path1) && SD.rename(path1, path2)) server.send(200, "text/plain", "OK");
+    if (sd.exists(path1) && sd.rename(path1, path2)) server.send(200, "text/plain", "OK");
     else server.send(500, "text/plain", "Failed");
   } else {
     server.send(400, "text/plain", "Unknown action");
@@ -299,9 +265,9 @@ void handleFileAction() {
 
 void handleDownload() {
   String path = server.arg("path");
-  if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
+  if (!sd.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
   
-  File download = SD.open(path, "r");
+  File download = sd.open(path, "r");
   String contentType = "application/octet-stream";
   if (path.endsWith(".html")) contentType = "text/html";
   else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
@@ -320,7 +286,7 @@ void handleUpload() {
   path += upload.filename;
 
   if (upload.status == UPLOAD_FILE_START) {
-    uploadFile = SD.open(path, "w");
+    uploadFile = sd.open(path, "w");
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
   } else if (upload.status == UPLOAD_FILE_END) {
@@ -330,7 +296,7 @@ void handleUpload() {
 
 void handleRoot() {
   if (hasCustomIndex) {
-    File idx = SD.open("/index.html", "r");
+    File idx = sd.open("/index.html", "r");
     server.stream(idx, "text/html", HTTP_GET, idx.size());
     idx.close();
   } else {
@@ -343,12 +309,13 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  if (!SD.begin(SD_CS)) {
+  // Инициализация через SdFat (как в ESPWebDAV)
+  if (!sd.begin(SD_CS)) {
     Serial.println("SD Card Mount Failed!");
     while (true) { digitalWrite(LED_PIN, !digitalRead(LED_PIN)); delay(100); }
   }
 
-  hasCustomIndex = SD.exists("/index.html");
+  hasCustomIndex = sd.exists("/index.html");
 
   String ssid = "sd-card-3dp";
   String pass = "12345678";
