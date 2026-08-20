@@ -230,25 +230,41 @@ bool serveFile(String path) {
 void setup() {
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, HIGH); // Выкл
+    digitalWrite(LED_PIN, HIGH); // Выключаем светодиод
 
-    // Инициализация SPI и SD
+    // Пин для проверки, не использует ли сейчас принтер SD-карту
+    pinMode(CS_SENSE, INPUT_PULLUP);
+
+    // Подготовка пина выбора чипа SD
+    pinMode(SD_CS, OUTPUT);
+    digitalWrite(SD_CS, HIGH);
+    
+    // Инициализация стандартного аппаратного SPI (пины 12, 13, 14 используются автоматически)
     SPI.begin();
-    SPI.pins(SCLK_PIN, MISO_PIN, MOSI_PIN, SD_CS); // Назначение пинов 
-    if (!SD.begin(SD_CS)) {
-        Serial.println("SD Card Mount Failed");
-        return;
+    delay(100); // Даем карте время на "пробуждение"
+
+    // Проверяем, не занята ли шина принтером (CS_SENSE)
+    if (digitalRead(CS_SENSE) == LOW) {
+        Serial.println("Warning: Marlin is currently using the SD card!");
     }
 
-    loadConfig();
+    // Инициализация SD
+    bool sd_mounted = SD.begin(SD_CS);
+    if (!sd_mounted) {
+        Serial.println("SD Card Mount Failed! Check FAT32 format and printer state.");
+        // Не делаем return; идем дальше, чтобы хотя бы поднять Wi-Fi
+    } else {
+        Serial.println("SD Card Mounted successfully!");
+        loadConfig();
+    }
 
-    // Попытка STA
+    // Попытка STA (подключение к роутеру)
     WiFi.mode(WIFI_STA);
     WiFi.begin(currentSSID.c_str(), currentPASS.c_str());
     Serial.print("Connecting to WiFi");
     
     int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 20) { // 10 секунд
+    while (WiFi.status() != WL_CONNECTED && retries < 20) {
         delay(500);
         Serial.print(".");
         retries++;
@@ -257,16 +273,25 @@ void setup() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
     } else {
-        // Fallback AP
-        Serial.println("\nWiFi connection failed. Starting AP.");
+        // Fallback AP (Режим точки доступа)
+        Serial.println("\nWiFi failed. Starting AP.");
         WiFi.mode(WIFI_AP);
         WiFi.softAP("sd-card-3dp", "12345678");
         Serial.println("AP IP: " + WiFi.softAPIP().toString());
     }
 
-    digitalWrite(LED_PIN, LOW); // Вкл (индикация готовности)
+    digitalWrite(LED_PIN, LOW); // Включаем светодиод (устройство готово)
 
-    // Маршруты
+    // Если SD не смонтировалась, на все запросы отдаем ошибку 
+    if (!sd_mounted) {
+        server.onNotFound([]() {
+            server.send(500, "text/plain", "SD Card Mount Failed. Format to FAT32 or turn off printer access.");
+        });
+        server.begin();
+        return;
+    }
+
+    // --- МАРШРУТЫ (остаются те же самые) ---
     server.on("/", HTTP_GET, []() {
         if (!serveFile("/index.html")) {
             server.send_P(200, "text/html", fallback_html);
@@ -276,7 +301,6 @@ void setup() {
     server.on("/api/list", HTTP_GET, []() {
         String dirPath = server.hasArg("dir") ? server.arg("dir") : "/";
         File dir = SD.open(dirPath);
-        
         DynamicJsonDocument doc(2048);
         JsonArray array = doc.to<JsonArray>();
 
@@ -290,7 +314,6 @@ void setup() {
             entry.close();
         }
         dir.close();
-
         String response;
         serializeJson(doc, response);
         server.send(200, "application/json", response);
@@ -333,7 +356,7 @@ void setup() {
     });
 
     server.on("/api/thumb", HTTP_GET, []() {
-        String file = server.arg("file"); // e.g. /model.gcode
+        String file = server.arg("file"); 
         int dot = file.lastIndexOf('.');
         String base = (dot > 0) ? file.substring(0, dot) : file;
         
@@ -345,12 +368,10 @@ void setup() {
         if (serveFile("/logo.jpg")) return;
         if (serveFile("/logo.png")) return;
 
-        // Если ничего нет, генерируем заглушку SVG (300x300)
         String svg = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='300' height='300' fill='#ddd'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='20'>No preview</text></svg>";
         server.send(200, "image/svg+xml", svg);
     });
 
-    // Обработчик скачивания любых других файлов
     server.onNotFound([]() {
         if (!serveFile(server.uri())) {
             server.send(404, "text/plain", "Not Found");
