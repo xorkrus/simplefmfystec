@@ -7,6 +7,7 @@
 
 class WebServer {
 public:
+    WebServer(uint16_t port = 80);
     void begin(SDManager* sd);
     void handleClient();
 private:
@@ -15,7 +16,7 @@ private:
     void setupRoutes();
     void handleFiles(AsyncWebServerRequest *request);
     void handleDownload(AsyncWebServerRequest *request);
-    void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
+    void handleUpload(AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final);
     void handleDelete(AsyncWebServerRequest *request, JsonVariant& json);
     void handleRename(AsyncWebServerRequest *request, JsonVariant& json);
     void handleMove(AsyncWebServerRequest *request, JsonVariant& json);
