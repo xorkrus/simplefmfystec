@@ -1,879 +1,700 @@
-// ============================================================================
-// simplefmfystec – SD WIFI File Manager for FYSETC (ESP8285)
-// ============================================================================
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SD.h>
+#include <FS.h>
 #include <SPI.h>
-#include <ArduinoJson.h>
 
-// ------------------------------- ПИНЫ ---------------------------------------
+// Пины
 #define SD_CS      4
-#define MISO       12
-#define MOSI       13
-#define SCLK       14
 #define CS_SENSE   5
 #define LED        2
 
-// ------------------------------- ГЛОБАЛЬНЫЕ ОБЪЕКТЫ -------------------------
+// Fallback WiFi
+#define FALLBACK_SSID     "xopkland"
+#define FALLBACK_PASSWORD "1234567890987654321"
+
+// AP параметры
+#define AP_SSID     "sd-card-3dp"
+#define AP_PASSWORD "12345678"
+
 ESP8266WebServer server(80);
-File uploadFile;
-String uploadPath;
-bool uploadSuccess = false;
 
-// ------------------------------- ПРОТОТИПЫ -----------------------------------
-void connectWiFi();
-void handleRoot();
-void handleMobileRoot();
-void handleList();
-void handleDownload();
-void handleUpload();
-void handleDelete();
-void handleRename();
-void handleMove();
-void handleMkdir();
-void handleThumbnail();
-void handleNotFound();
-bool initSD();
-String getThumbnailPath(const String& gcodePath);
-void sendThumbnailPlaceholder();
-bool isSDBusy();
-void blinkLED(int times, int delayMs);
+bool sd_ok = false;
+String wifi_ssid = "";
+String wifi_pass = "";
 
-// ============================================================================
-// ВСТРОЕННЫЙ WEB‑ИНТЕРФЕЙС (FALLBACK)
-// ============================================================================
-
-// ---- Десктопная версия (index.html) ----
-const char index_html[] PROGMEM = R"rawliteral(
+// Встроенные веб-страницы (fallback)
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SD File Manager</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e2f; color: #eee; display: flex; height: 100vh; overflow: hidden; }
-    #container { display: flex; width: 100%; height: 100vh; }
-    #left { flex: 2; padding: 20px; overflow-y: auto; background: #2a2a3e; border-right: 2px solid #3a3a5a; }
-    #right { flex: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #252538; }
-    #right img { max-width: 100%; max-height: 90vh; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); background: #333; }
-    #path { font-size: 14px; color: #aaa; margin-bottom: 12px; word-break: break-all; }
-    #controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
-    #controls button, #controls input[type="file"] { background: #3b3b5a; border: none; color: #fff; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; transition: 0.2s; }
-    #controls button:hover { background: #5a5a7e; }
-    #controls input[type="file"] { display: inline-block; padding: 6px 12px; background: #4a4a6a; }
-    #fileList { list-style: none; }
-    #fileList li { display: flex; align-items: center; padding: 8px 12px; margin: 4px 0; background: #32324a; border-radius: 6px; cursor: pointer; transition: 0.15s; }
-    #fileList li:hover { background: #404060; }
-    #fileList li .name { flex: 1; margin-left: 10px; }
-    #fileList li .size { color: #888; font-size: 13px; margin-right: 12px; }
-    #fileList li .actions button { background: none; border: none; color: #9cf; cursor: pointer; font-size: 16px; margin-left: 6px; }
-    #fileList li .actions button:hover { color: #fff; }
-    .dir::before { content: "📁 "; }
-    .file::before { content: "📄 "; }
-    .gcode::before { content: "🖨️ "; }
-    .dropzone { border: 2px dashed #5a5a7e; border-radius: 12px; padding: 20px; text-align: center; margin: 12px 0; color: #888; transition: 0.3s; }
-    .dropzone.dragover { background: #3a3a5a; border-color: #8cf; }
-    #progress-bar { width: 100%; height: 6px; background: #2a2a3e; border-radius: 4px; margin: 8px 0; overflow: hidden; display: none; }
-    #progress-bar div { height: 100%; width: 0%; background: #6cf; transition: width 0.2s; }
-    #status { margin-top: 8px; font-size: 14px; color: #aaa; }
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
-    .modal-content { background: #2a2a3e; padding: 24px; border-radius: 12px; min-width: 300px; }
-    .modal-content input { width: 100%; padding: 8px; margin: 8px 0; background: #1e1e2f; border: 1px solid #4a4a6a; color: #eee; border-radius: 4px; }
-    .modal-content button { margin: 4px; }
-    @media (max-width: 800px) {
-      #container { flex-direction: column; }
-      #left { flex: 2; border-right: none; border-bottom: 2px solid #3a3a5a; }
-      #right { flex: 1; min-height: 200px; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SD Card Manager</title>
+<style>
+  :root { --bg: #f5f5f5; --panel: #fff; --text: #333; --accent: #4a90d9; --hover: #e9f0fa; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; }
+  .container { display: flex; width: 100%; height: 100vh; }
+  .file-manager { flex: 1; padding: 20px; display: flex; flex-direction: column; }
+  .preview-pane { width: 300px; background: var(--panel); border-left: 1px solid #ddd; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
+  .preview-pane img { max-width: 100%; max-height: 80vh; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .toolbar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+  .toolbar button, .toolbar .upload-btn { padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+  .toolbar button:hover, .toolbar .upload-btn:hover { opacity: 0.9; }
+  .toolbar input[type="file"] { display: none; }
+  .path-bar { background: var(--panel); padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
+  .file-list { flex: 1; overflow-y: auto; background: var(--panel); border-radius: 4px; }
+  .file-item { display: flex; align-items: center; padding: 10px 15px; border-bottom: 1px solid #eee; cursor: pointer; }
+  .file-item:hover { background: var(--hover); }
+  .file-item .icon { margin-right: 10px; width: 24px; text-align: center; }
+  .file-item .name { flex: 1; }
+  .file-item .actions { display: flex; gap: 5px; }
+  .file-item .actions button { background: none; border: none; cursor: pointer; font-size: 16px; }
+  .drop-zone { border: 2px dashed #ccc; border-radius: 4px; padding: 20px; text-align: center; margin-bottom: 15px; color: #888; transition: 0.3s; }
+  .drop-zone.dragover { border-color: var(--accent); background: #f0f7ff; }
+  .progress { display: none; height: 6px; background: #e0e0e0; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+  .progress-bar { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+</style>
 </head>
 <body>
-<div id="container">
-  <div id="left">
-    <div id="path">/</div>
-    <div id="controls">
-      <button onclick="refreshList()">🔄 Обновить</button>
-      <button onclick="mkdir()">📁 Создать папку</button>
-      <label for="fileInput" style="cursor:pointer;">📤 Загрузить</label>
-      <input type="file" id="fileInput" multiple style="display:none;" onchange="uploadFiles(this.files)">
-      <button onclick="window.location.href='/download?file='+encodeURIComponent(currentPath)">⬇ Скачать</button>
+<div class="container">
+  <div class="file-manager">
+    <div class="path-bar" id="pathBar">/</div>
+    <div class="drop-zone" id="dropZone">Перетащите файлы сюда или нажмите для выбора</div>
+    <input type="file" id="fileInput" multiple>
+    <div class="progress" id="uploadProgress"><div class="progress-bar" id="uploadProgressBar"></div></div>
+    <div class="toolbar">
+      <button id="btnUpload" class="upload-btn">Загрузить</button>
+      <button id="btnNewFolder">Новая папка</button>
+      <button id="btnRefresh">Обновить</button>
     </div>
-    <div id="dropzone" class="dropzone">Перетащите файлы сюда для загрузки</div>
-    <div id="progress-bar"><div></div></div>
-    <div id="status"></div>
-    <ul id="fileList"></ul>
+    <div class="file-list" id="fileList"></div>
   </div>
-  <div id="right">
-    <img id="preview" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Crect width='300' height='300' fill='%23555'/%3E%3C/svg%3E" alt="preview">
+  <div class="preview-pane" id="previewPane">
+    <img id="previewImage" src="" alt="Предпросмотр" style="display:none;">
+    <div id="previewPlaceholder">Выберите .gcode файл</div>
   </div>
 </div>
-
-<!-- Модальное окно для создания папки -->
-<div id="mkdirModal" class="modal">
-  <div class="modal-content">
-    <h3>Создать папку</h3>
-    <input type="text" id="newDirName" placeholder="Имя папки">
-    <button onclick="doMkdir()">Создать</button>
-    <button onclick="closeModal()">Отмена</button>
-  </div>
-</div>
-
 <script>
-let currentPath = "/";
-let currentFiles = [];
+let currentPath = '/';
+const fileList = document.getElementById('fileList');
+const pathBar = document.getElementById('pathBar');
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const uploadProgress = document.getElementById('uploadProgress');
+const uploadProgressBar = document.getElementById('uploadProgressBar');
+const previewImage = document.getElementById('previewImage');
+const previewPlaceholder = document.getElementById('previewPlaceholder');
 
-function refreshList() {
-  fetch('/list?path=' + encodeURIComponent(currentPath))
-    .then(r => r.json())
-    .then(data => {
-      if (!data.success) { status('Ошибка: ' + data.message); return; }
-      currentFiles = data.files || [];
-      renderList(currentFiles);
-    })
-    .catch(() => status('Ошибка загрузки списка'));
+function apiUrl(path) { return '/api' + path; }
+
+async function fetchJSON(url, options = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
-function renderList(files) {
-  const ul = document.getElementById('fileList');
-  ul.innerHTML = '';
-  // Кнопка "Наверх"
-  if (currentPath !== "/") {
-    const li = document.createElement('li');
-    li.className = 'dir';
-    li.innerHTML = `<span class="name">..</span>`;
-    li.onclick = () => { currentPath = currentPath.substring(0, currentPath.lastIndexOf('/'));
-                         if (currentPath === '') currentPath = '/';
-                         refreshList(); };
-    ul.appendChild(li);
+async function loadFiles() {
+  try {
+    const data = await fetchJSON(apiUrl('/list?dir=' + encodeURIComponent(currentPath)));
+    renderFiles(data);
+  } catch(e) { alert('Ошибка загрузки списка: ' + e.message); }
+}
+
+function renderFiles(data) {
+  fileList.innerHTML = '';
+  if (currentPath !== '/') {
+    const parent = document.createElement('div');
+    parent.className = 'file-item';
+    parent.innerHTML = '<span class="icon">📁</span><span class="name">..</span>';
+    parent.onclick = () => { currentPath = currentPath.split('/').slice(0, -2).join('/') + '/'; loadFiles(); };
+    fileList.appendChild(parent);
   }
-  files.sort((a,b) => (a.isDir === b.isDir) ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1));
-  for (let f of files) {
-    const li = document.createElement('li');
-    const cls = f.isDir ? 'dir' : (f.name.endsWith('.gcode') || f.name.endsWith('.gco') ? 'gcode' : 'file');
-    li.className = cls;
-    const sizeStr = f.isDir ? '' : (f.size < 1024 ? f.size + ' B' : (f.size < 1048576 ? (f.size/1024).toFixed(1)+' KB' : (f.size/1048576).toFixed(1)+' MB'));
-    li.innerHTML = `<span class="name">${f.name}</span><span class="size">${sizeStr}</span>
+  data.files.forEach(file => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    const isDir = file.type === 'dir';
+    item.innerHTML = `<span class="icon">${isDir ? '📁' : '📄'}</span><span class="name">${file.name}</span>
       <span class="actions">
-        ${!f.isDir ? `<button onclick="downloadFile('${f.name}')" title="Скачать">⬇</button>` : ''}
-        <button onclick="renameFile('${f.name}')" title="Переименовать">✏️</button>
-        <button onclick="deleteFile('${f.name}')" title="Удалить">🗑</button>
+        <button data-action="download" title="Скачать">⬇️</button>
+        <button data-action="rename" title="Переименовать">✏️</button>
+        <button data-action="delete" title="Удалить">🗑️</button>
       </span>`;
-    li.onclick = (e) => {
-      if (e.target.tagName === 'BUTTON') return;
-      if (f.isDir) {
-        currentPath = currentPath === '/' ? '/' + f.name : currentPath + '/' + f.name;
-        refreshList();
-      } else {
-        showPreview(f.name);
-      }
+    item.querySelector('.name').onclick = () => {
+      if (isDir) { currentPath += file.name + '/'; loadFiles(); }
+      else { showPreview(file.path); }
     };
-    ul.appendChild(li);
-  }
+    item.querySelector('[data-action="download"]').onclick = (e) => { e.stopPropagation(); window.location.href = apiUrl('/download?path=' + encodeURIComponent(file.path)); };
+    item.querySelector('[data-action="rename"]').onclick = (e) => { e.stopPropagation(); renameFile(file.path); };
+    item.querySelector('[data-action="delete"]').onclick = (e) => { e.stopPropagation(); deleteFile(file.path); };
+    fileList.appendChild(item);
+  });
 }
 
-function showPreview(filename) {
-  const img = document.getElementById('preview');
-  if (filename.endsWith('.gcode') || filename.endsWith('.gco')) {
-    const path = currentPath === '/' ? '/' + filename : currentPath + '/' + filename;
-    img.src = '/thumbnail?file=' + encodeURIComponent(path);
-  } else {
-    img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="300" height="300"%3E%3Crect width="300" height="300" fill="%23555"/%3E%3C/svg%3E';
-  }
+async function showPreview(path) {
+  try {
+    const res = await fetch(apiUrl('/thumbnail?path=' + encodeURIComponent(path)));
+    if (res.ok) {
+      const blob = await res.blob();
+      previewImage.src = URL.createObjectURL(blob);
+      previewImage.style.display = 'block';
+      previewPlaceholder.style.display = 'none';
+    } else {
+      previewImage.style.display = 'none';
+      previewPlaceholder.style.display = 'block';
+    }
+  } catch(e) { /* ignore */ }
 }
 
-function downloadFile(name) {
-  const path = currentPath === '/' ? '/' + name : currentPath + '/' + name;
-  window.location.href = '/download?file=' + encodeURIComponent(path);
+async function deleteFile(path) {
+  if (!confirm('Удалить ' + path + '?')) return;
+  await fetch(apiUrl('/delete?path=' + encodeURIComponent(path)), { method: 'POST' });
+  loadFiles();
 }
 
-function deleteFile(name) {
-  if (!confirm('Удалить "' + name + '"?')) return;
-  const path = currentPath === '/' ? '/' + name : currentPath + '/' + name;
-  fetch('/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: path })
-  })
-  .then(r => r.json())
-  .then(data => { if (data.success) refreshList(); else status('Ошибка: ' + data.message); });
+async function renameFile(path) {
+  const newName = prompt('Новое имя:', path.split('/').pop());
+  if (!newName) return;
+  const newPath = path.substring(0, path.lastIndexOf('/') + 1) + newName;
+  await fetch(apiUrl('/rename'), { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({oldPath:path, newPath:newPath}) });
+  loadFiles();
 }
 
-function renameFile(name) {
-  const newName = prompt('Новое имя для "' + name + '":', name);
-  if (!newName || newName === name) return;
-  const oldPath = currentPath === '/' ? '/' + name : currentPath + '/' + name;
-  const newPath = currentPath === '/' ? '/' + newName : currentPath + '/' + newName;
-  fetch('/rename', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ oldPath: oldPath, newPath: newPath })
-  })
-  .then(r => r.json())
-  .then(data => { if (data.success) refreshList(); else status('Ошибка: ' + data.message); });
-}
-
-function mkdir() {
-  document.getElementById('mkdirModal').style.display = 'flex';
-}
-function closeModal() {
-  document.getElementById('mkdirModal').style.display = 'none';
-}
-function doMkdir() {
-  const name = document.getElementById('newDirName').value.trim();
+async function createFolder() {
+  const name = prompt('Имя новой папки:');
   if (!name) return;
-  const path = currentPath === '/' ? '/' + name : currentPath + '/' + name;
-  fetch('/mkdir', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: path })
-  })
-  .then(r => r.json())
-  .then(data => { if (data.success) { refreshList(); closeModal(); } else status('Ошибка: ' + data.message); });
+  await fetch(apiUrl('/mkdir'), { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({path: currentPath + name}) });
+  loadFiles();
 }
-
-// Drag & Drop
-const dropzone = document.getElementById('dropzone');
-dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
-dropzone.addEventListener('dragleave', () => { dropzone.classList.remove('dragover'); });
-dropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropzone.classList.remove('dragover');
-  if (e.dataTransfer.files.length > 0) uploadFiles(e.dataTransfer.files);
-});
 
 function uploadFiles(files) {
+  if (!files.length) return;
+  uploadProgress.style.display = 'block';
   const formData = new FormData();
-  for (let f of files) formData.append('file', f);
-  formData.append('path', currentPath);
+  for (let f of files) formData.append('files', f, currentPath + f.name);
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/upload', true);
+  xhr.open('POST', apiUrl('/upload'));
   xhr.upload.onprogress = (e) => {
-    const pct = e.lengthComputable ? Math.round((e.loaded / e.total) * 100) : 0;
-    document.getElementById('progress-bar').style.display = 'block';
-    document.querySelector('#progress-bar div').style.width = pct + '%';
+    if (e.lengthComputable) {
+      const pct = Math.round(e.loaded * 100 / e.total);
+      uploadProgressBar.style.width = pct + '%';
+    }
   };
   xhr.onload = () => {
-    document.getElementById('progress-bar').style.display = 'none';
-    if (xhr.status === 200) { refreshList(); status('Загрузка завершена'); } else status('Ошибка загрузки');
+    uploadProgress.style.display = 'none';
+    uploadProgressBar.style.width = '0';
+    loadFiles();
   };
-  xhr.onerror = () => { document.getElementById('progress-bar').style.display = 'none'; status('Ошибка сети'); };
+  xhr.onerror = () => alert('Ошибка загрузки');
   xhr.send(formData);
 }
 
-function status(msg) {
-  document.getElementById('status').textContent = msg;
-}
+// Обработчики
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { uploadFiles(fileInput.files); fileInput.value = ''; });
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); uploadFiles(e.dataTransfer.files); });
+document.getElementById('btnUpload').addEventListener('click', () => fileInput.click());
+document.getElementById('btnNewFolder').addEventListener('click', createFolder);
+document.getElementById('btnRefresh').addEventListener('click', loadFiles);
 
-// Инициализация
-refreshList();
+loadFiles();
 </script>
 </body>
 </html>
 )rawliteral";
 
-// ---- Мобильная версия (index_m.html) ----
-const char index_m_html[] PROGMEM = R"rawliteral(
+const char INDEX_M_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>SD File Manager (mobile)</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e2f; color: #eee; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-    #top { flex: 0 0 45vh; display: flex; justify-content: center; align-items: center; background: #252538; border-bottom: 2px solid #3a3a5a; padding: 10px; }
-    #top img { max-width: 100%; max-height: 100%; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); background: #333; }
-    #bottom { flex: 1; display: flex; flex-direction: column; padding: 12px; overflow: hidden; }
-    #path { font-size: 14px; color: #aaa; margin-bottom: 6px; word-break: break-all; }
-    #controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-    #controls button, #controls input[type="file"] { background: #3b3b5a; border: none; color: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: 0.2s; }
-    #controls button:hover { background: #5a5a7e; }
-    #controls input[type="file"] { display: inline-block; padding: 4px 10px; background: #4a4a6a; }
-    #fileList { list-style: none; overflow-y: auto; flex: 1; }
-    #fileList li { display: flex; align-items: center; padding: 6px 10px; margin: 3px 0; background: #32324a; border-radius: 6px; cursor: pointer; transition: 0.15s; }
-    #fileList li:hover { background: #404060; }
-    #fileList li .name { flex: 1; margin-left: 6px; font-size: 15px; }
-    #fileList li .size { color: #888; font-size: 12px; margin-right: 8px; }
-    #fileList li .actions button { background: none; border: none; color: #9cf; cursor: pointer; font-size: 14px; margin-left: 4px; }
-    #fileList li .actions button:hover { color: #fff; }
-    .dir::before { content: "📁 "; }
-    .file::before { content: "📄 "; }
-    .gcode::before { content: "🖨️ "; }
-    .dropzone { border: 2px dashed #5a5a7e; border-radius: 8px; padding: 12px; text-align: center; margin: 6px 0; color: #888; font-size: 13px; transition: 0.3s; }
-    .dropzone.dragover { background: #3a3a5a; border-color: #8cf; }
-    #progress-bar { width: 100%; height: 4px; background: #2a2a3e; border-radius: 4px; margin: 4px 0; overflow: hidden; display: none; }
-    #progress-bar div { height: 100%; width: 0%; background: #6cf; transition: width 0.2s; }
-    #status { font-size: 12px; color: #aaa; margin-top: 4px; }
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
-    .modal-content { background: #2a2a3e; padding: 20px; border-radius: 12px; min-width: 260px; }
-    .modal-content input { width: 100%; padding: 8px; margin: 8px 0; background: #1e1e2f; border: 1px solid #4a4a6a; color: #eee; border-radius: 4px; }
-    .modal-content button { margin: 4px; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SD Card Manager (Mobile)</title>
+<style>
+  :root { --bg: #f5f5f5; --panel: #fff; --text: #333; --accent: #4a90d9; --hover: #e9f0fa; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; }
+  .preview-pane { height: 30vh; background: var(--panel); display: flex; align-items: center; justify-content: center; padding: 10px; border-bottom: 1px solid #ddd; }
+  .preview-pane img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+  .file-manager { flex: 1; padding: 10px; display: flex; flex-direction: column; }
+  .path-bar { background: var(--panel); padding: 8px 12px; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
+  .drop-zone { border: 2px dashed #ccc; border-radius: 4px; padding: 15px; text-align: center; margin-bottom: 10px; color: #888; }
+  .drop-zone.dragover { border-color: var(--accent); background: #f0f7ff; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .toolbar button { padding: 8px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; font-size: 14px; }
+  .file-list { flex: 1; overflow-y: auto; background: var(--panel); border-radius: 4px; }
+  .file-item { display: flex; align-items: center; padding: 12px 15px; border-bottom: 1px solid #eee; }
+  .file-item:active { background: var(--hover); }
+  .file-item .icon { margin-right: 10px; }
+  .file-item .name { flex: 1; word-break: break-all; }
+  .file-item .actions button { background: none; border: none; font-size: 18px; margin-left: 5px; }
+  .progress { display: none; height: 6px; background: #e0e0e0; border-radius: 3px; margin: 10px 0; }
+  .progress-bar { height: 100%; background: var(--accent); }
+</style>
 </head>
 <body>
-<div id="top">
-  <img id="preview" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Crect width='300' height='300' fill='%23555'/%3E%3C/svg%3E" alt="preview">
+<div class="preview-pane" id="previewPane">
+  <img id="previewImage" style="display:none;">
+  <div id="previewPlaceholder">Выберите .gcode файл</div>
 </div>
-<div id="bottom">
-  <div id="path">/</div>
-  <div id="controls">
-    <button onclick="refreshList()">🔄</button>
-    <button onclick="mkdir()">📁</button>
-    <label for="fileInput" style="cursor:pointer;">📤</label>
-    <input type="file" id="fileInput" multiple style="display:none;" onchange="uploadFiles(this.files)">
-    <button onclick="window.location.href='/download?file='+encodeURIComponent(currentPath)">⬇</button>
+<div class="file-manager">
+  <div class="path-bar" id="pathBar">/</div>
+  <div class="drop-zone" id="dropZone">Нажмите для загрузки файлов</div>
+  <input type="file" id="fileInput" multiple style="display:none">
+  <div class="progress" id="uploadProgress"><div class="progress-bar" id="uploadProgressBar"></div></div>
+  <div class="toolbar">
+    <button id="btnNewFolder">📁</button>
+    <button id="btnRefresh">🔄</button>
   </div>
-  <div id="dropzone" class="dropzone">Перетащите файлы</div>
-  <div id="progress-bar"><div></div></div>
-  <div id="status"></div>
-  <ul id="fileList"></ul>
+  <div class="file-list" id="fileList"></div>
 </div>
-
-<!-- Модалка mkdir -->
-<div id="mkdirModal" class="modal">
-  <div class="modal-content">
-    <h4>Создать папку</h4>
-    <input type="text" id="newDirName" placeholder="Имя папки">
-    <button onclick="doMkdir()">Создать</button>
-    <button onclick="closeModal()">Отмена</button>
-  </div>
-</div>
-
 <script>
-let currentPath = "/";
+let currentPath = '/';
+const fileList = document.getElementById('fileList');
+const pathBar = document.getElementById('pathBar');
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const uploadProgress = document.getElementById('uploadProgress');
+const uploadProgressBar = document.getElementById('uploadProgressBar');
+const previewImage = document.getElementById('previewImage');
+const previewPlaceholder = document.getElementById('previewPlaceholder');
 
-function refreshList() {
-  fetch('/list?path=' + encodeURIComponent(currentPath))
-    .then(r => r.json())
-    .then(data => {
-      if (!data.success) { status('Ошибка: ' + data.message); return; }
-      renderList(data.files || []);
-    })
-    .catch(() => status('Ошибка загрузки'));
+function apiUrl(path) { return '/api' + path; }
+
+async function fetchJSON(url, options = {}) {
+  const res = await fetch(url, options);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
-function renderList(files) {
-  const ul = document.getElementById('fileList');
-  ul.innerHTML = '';
-  if (currentPath !== "/") {
-    const li = document.createElement('li');
-    li.className = 'dir';
-    li.innerHTML = `<span class="name">..</span>`;
-    li.onclick = () => { currentPath = currentPath.substring(0, currentPath.lastIndexOf('/'));
-                         if (currentPath === '') currentPath = '/';
-                         refreshList(); };
-    ul.appendChild(li);
+async function loadFiles() {
+  try {
+    const data = await fetchJSON(apiUrl('/list?dir=' + encodeURIComponent(currentPath)));
+    renderFiles(data);
+  } catch(e) { alert('Ошибка: ' + e.message); }
+}
+
+function renderFiles(data) {
+  fileList.innerHTML = '';
+  if (currentPath !== '/') {
+    const parent = document.createElement('div');
+    parent.className = 'file-item';
+    parent.innerHTML = '<span class="icon">📁</span><span class="name">..</span>';
+    parent.onclick = () => { currentPath = currentPath.split('/').slice(0, -2).join('/') + '/'; loadFiles(); };
+    fileList.appendChild(parent);
   }
-  files.sort((a,b) => (a.isDir === b.isDir) ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1));
-  for (let f of files) {
-    const li = document.createElement('li');
-    const cls = f.isDir ? 'dir' : (f.name.endsWith('.gcode') || f.name.endsWith('.gco') ? 'gcode' : 'file');
-    li.className = cls;
-    const sizeStr = f.isDir ? '' : (f.size < 1024 ? f.size + ' B' : (f.size < 1048576 ? (f.size/1024).toFixed(1)+' KB' : (f.size/1048576).toFixed(1)+' MB'));
-    li.innerHTML = `<span class="name">${f.name}</span><span class="size">${sizeStr}</span>
+  data.files.forEach(file => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    const isDir = file.type === 'dir';
+    item.innerHTML = `<span class="icon">${isDir ? '📁' : '📄'}</span><span class="name">${file.name}</span>
       <span class="actions">
-        ${!f.isDir ? `<button onclick="downloadFile('${f.name}')" title="Скачать">⬇</button>` : ''}
-        <button onclick="renameFile('${f.name}')" title="Переименовать">✏️</button>
-        <button onclick="deleteFile('${f.name}')" title="Удалить">🗑</button>
+        <button data-action="download">⬇️</button>
+        <button data-action="rename">✏️</button>
+        <button data-action="delete">🗑️</button>
       </span>`;
-    li.onclick = (e) => {
-      if (e.target.tagName === 'BUTTON') return;
-      if (f.isDir) {
-        currentPath = currentPath === '/' ? '/' + f.name : currentPath + '/' + f.name;
-        refreshList();
-      } else {
-        showPreview(f.name);
-      }
+    item.querySelector('.name').onclick = () => {
+      if (isDir) { currentPath += file.name + '/'; loadFiles(); }
+      else { showPreview(file.path); }
     };
-    ul.appendChild(li);
-  }
+    item.querySelector('[data-action="download"]').onclick = (e) => { e.stopPropagation(); window.location.href = apiUrl('/download?path=' + encodeURIComponent(file.path)); };
+    item.querySelector('[data-action="rename"]').onclick = (e) => { e.stopPropagation(); renameFile(file.path); };
+    item.querySelector('[data-action="delete"]').onclick = (e) => { e.stopPropagation(); deleteFile(file.path); };
+    fileList.appendChild(item);
+  });
 }
 
-function showPreview(filename) {
-  const img = document.getElementById('preview');
-  if (filename.endsWith('.gcode') || filename.endsWith('.gco')) {
-    const path = currentPath === '/' ? '/' + filename : currentPath + '/' + filename;
-    img.src = '/thumbnail?file=' + encodeURIComponent(path);
-  } else {
-    img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="300" height="300"%3E%3Crect width="300" height="300" fill="%23555"/%3E%3C/svg%3E';
-  }
+async function showPreview(path) {
+  try {
+    const res = await fetch(apiUrl('/thumbnail?path=' + encodeURIComponent(path)));
+    if (res.ok) {
+      const blob = await res.blob();
+      previewImage.src = URL.createObjectURL(blob);
+      previewImage.style.display = 'block';
+      previewPlaceholder.style.display = 'none';
+    }
+  } catch(e) {}
 }
 
-// Остальные функции идентичны десктопной версии (downloadFile, deleteFile, renameFile, mkdir, uploadFiles, статус и т.д.)
-// Для краткости здесь приведены только ссылки на те же функции, но в реальном коде они должны быть скопированы.
-// В данном проекте для экономии места они дублируются в полном коде. Ниже показан минимум.
-function downloadFile(name) { const path = currentPath === '/' ? '/' + name : currentPath + '/' + name; window.location.href = '/download?file=' + encodeURIComponent(path); }
-function deleteFile(name) { if (!confirm('Удалить "'+name+'"?')) return; const path = currentPath === '/' ? '/' + name : currentPath + '/' + name; fetch('/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})}).then(r=>r.json()).then(d=>{if(d.success)refreshList();else status('Ошибка: '+d.message);}); }
-function renameFile(name) { const newName = prompt('Новое имя:', name); if(!newName||newName===name)return; const oldPath = currentPath === '/' ? '/' + name : currentPath + '/' + name; const newPath = currentPath === '/' ? '/' + newName : currentPath + '/' + newName; fetch('/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPath,newPath})}).then(r=>r.json()).then(d=>{if(d.success)refreshList();else status('Ошибка: '+d.message);}); }
-function mkdir() { document.getElementById('mkdirModal').style.display = 'flex'; }
-function closeModal() { document.getElementById('mkdirModal').style.display = 'none'; }
-function doMkdir() { const name = document.getElementById('newDirName').value.trim(); if(!name)return; const path = currentPath === '/' ? '/' + name : currentPath + '/' + name; fetch('/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})}).then(r=>r.json()).then(d=>{if(d.success){refreshList();closeModal();}else status('Ошибка: '+d.message);}); }
-function uploadFiles(files) { const fd = new FormData(); for(let f of files) fd.append('file', f); fd.append('path', currentPath); const xhr = new XMLHttpRequest(); xhr.open('POST', '/upload', true); xhr.upload.onprogress = (e) => { const pct = e.lengthComputable ? Math.round((e.loaded/e.total)*100) : 0; document.getElementById('progress-bar').style.display='block'; document.querySelector('#progress-bar div').style.width=pct+'%'; }; xhr.onload = () => { document.getElementById('progress-bar').style.display='none'; if(xhr.status===200){refreshList();status('OK');}else status('Ошибка'); }; xhr.onerror = () => { document.getElementById('progress-bar').style.display='none'; status('Сеть'); }; xhr.send(fd); }
-function status(msg) { document.getElementById('status').textContent = msg; }
-refreshList();
+async function deleteFile(path) {
+  if (!confirm('Удалить ' + path + '?')) return;
+  await fetch(apiUrl('/delete?path=' + encodeURIComponent(path)), { method: 'POST' });
+  loadFiles();
+}
+
+async function renameFile(path) {
+  const newName = prompt('Новое имя:', path.split('/').pop());
+  if (!newName) return;
+  const newPath = path.substring(0, path.lastIndexOf('/') + 1) + newName;
+  await fetch(apiUrl('/rename'), { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({oldPath:path, newPath:newPath}) });
+  loadFiles();
+}
+
+function uploadFiles(files) {
+  if (!files.length) return;
+  uploadProgress.style.display = 'block';
+  const formData = new FormData();
+  for (let f of files) formData.append('files', f, currentPath + f.name);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', apiUrl('/upload'));
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) {
+      uploadProgressBar.style.width = Math.round(e.loaded * 100 / e.total) + '%';
+    }
+  };
+  xhr.onload = () => { uploadProgress.style.display = 'none'; uploadProgressBar.style.width = '0'; loadFiles(); };
+  xhr.send(formData);
+}
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { uploadFiles(fileInput.files); fileInput.value = ''; });
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); uploadFiles(e.dataTransfer.files); });
+document.getElementById('btnNewFolder').addEventListener('click', async () => {
+  const name = prompt('Имя папки:');
+  if (!name) return;
+  await fetch(apiUrl('/mkdir'), { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({path: currentPath + name}) });
+  loadFiles();
+});
+document.getElementById('btnRefresh').addEventListener('click', loadFiles);
+
+loadFiles();
 </script>
 </body>
 </html>
 )rawliteral";
 
-// ============================================================================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ============================================================================
-
-bool isSDBusy() {
-  return digitalRead(CS_SENSE) == LOW;
+// Вспомогательные функции
+void setLED(bool on) {
+  digitalWrite(LED, on ? LOW : HIGH); // активный low
 }
 
-void blinkLED(int times, int delayMs) {
-  pinMode(LED, OUTPUT);
-  for (int i=0; i<times; i++) {
-    digitalWrite(LED, HIGH);
-    delay(delayMs);
-    digitalWrite(LED, LOW);
-    delay(delayMs);
+void blinkLED(int times, int delayMs = 200) {
+  for (int i = 0; i < times; i++) {
+    setLED(true); delay(delayMs);
+    setLED(false); delay(delayMs);
   }
 }
 
-bool initSD() {
-  SPI.begin(SCLK, MISO, MOSI, SD_CS);
-  pinMode(SD_CS, OUTPUT);
-  digitalWrite(SD_CS, HIGH);
-  if (!SD.begin(SD_CS)) {
-    Serial.println("SD init failed");
-    return false;
-  }
-  Serial.println("SD initialized");
-  return true;
-}
-
-// Чтение SETUP.INI и извлечение SSID/PASSWORD
-bool readWiFiFromSD(String &ssid, String &password) {
+bool readSetupIni(String &ssid, String &pass) {
   if (!SD.exists("/SETUP.INI")) return false;
-  File f = SD.open("/SETUP.INI", FILE_READ);
+  File f = SD.open("/SETUP.INI", "r");
   if (!f) return false;
-  bool inWifi = false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.startsWith("[WIFI]")) {
-      inWifi = true;
-      continue;
-    }
-    if (inWifi && line.startsWith("SSID=")) {
-      ssid = line.substring(5);
-      ssid.trim();
-    } else if (inWifi && line.startsWith("PASSWORD=")) {
-      password = line.substring(9);
-      password.trim();
-    } else if (inWifi && line.startsWith("[")) {
-      inWifi = false; // другая секция
-    }
-  }
+  String content = f.readString();
   f.close();
-  return (ssid.length() > 0 && password.length() > 0);
+  // Простейший парсинг
+  int wifiSection = content.indexOf("[WIFI]");
+  if (wifiSection < 0) return false;
+  int ssidPos = content.indexOf("SSID=", wifiSection);
+  int passPos = content.indexOf("PASSWORD=", wifiSection);
+  if (ssidPos < 0 || passPos < 0) return false;
+  int ssidEnd = content.indexOf('\n', ssidPos);
+  int passEnd = content.indexOf('\n', passPos);
+  if (ssidEnd < 0) ssidEnd = content.length();
+  if (passEnd < 0) passEnd = content.length();
+  ssid = content.substring(ssidPos + 5, ssidEnd);
+  pass = content.substring(passPos + 9, passEnd);
+  ssid.trim(); pass.trim();
+  return (ssid.length() > 0);
 }
 
-// Подключение к WiFi или создание AP
-void connectWiFi() {
-  String ssid, password;
-  bool gotFromSD = false;
-
-  // 1. Пытаемся прочитать SETUP.INI
-  if (initSD()) {
-    if (readWiFiFromSD(ssid, password)) {
-      gotFromSD = true;
-      Serial.printf("WiFi from SD: %s / %s\n", ssid.c_str(), password.c_str());
-    }
-  }
-
-  // 2. Fallback, если не удалось или SD нет
-  if (!gotFromSD) {
-    ssid = "xopkland";
-    password = "1234567890987654321";
-    Serial.println("Using fallback WiFi credentials");
-  }
-
-  // 3. Пытаемся подключиться
+bool connectToWiFi(String ssid, String pass) {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid.c_str(), password.c_str());
+  WiFi.begin(ssid.c_str(), pass.c_str());
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) { // 15 sec
     delay(500);
-    Serial.print(".");
     attempts++;
-    blinkLED(1, 100);
+    setLED(!digitalRead(LED)); // мигаем
   }
+  return WiFi.status() == WL_CONNECTED;
+}
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    digitalWrite(LED, HIGH); // светим постоянно при успешном подключении
-    return;
-  }
-
-  // 4. Создаём точку доступа
-  Serial.println("\nStarting AP mode");
+void startAPMode() {
   WiFi.mode(WIFI_AP);
-  WiFi.softAP("sd-card-3dp", "12345678");
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());
-  digitalWrite(LED, HIGH);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  // Статический IP для AP
+  IPAddress apIP(192, 168, 4, 1);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
 }
 
-// ============================================================================
-// ОБРАБОТЧИКИ HTTP
-// ============================================================================
-
-void handleRoot() {
-  // Проверяем наличие index.html на SD
-  if (SD.exists("/index.html")) {
-    File f = SD.open("/index.html", FILE_READ);
-    if (f) {
-      server.send(200, "text/html", f.readString());
-      f.close();
-      return;
+void initWiFi() {
+  String ssid, pass;
+  bool connected = false;
+  // 1. Попытка из SETUP.INI
+  if (readSetupIni(ssid, pass)) {
+    if (connectToWiFi(ssid, pass)) {
+      connected = true;
     }
   }
-  // Иначе отправляем встроенный (десктоп)
-  server.send(200, "text/html", FPSTR(index_html));
-}
-
-void handleMobileRoot() {
-  if (SD.exists("/index_m.html")) {
-    File f = SD.open("/index_m.html", FILE_READ);
-    if (f) {
-      server.send(200, "text/html", f.readString());
-      f.close();
-      return;
+  // 2. Fallback
+  if (!connected) {
+    if (connectToWiFi(FALLBACK_SSID, FALLBACK_PASSWORD)) {
+      connected = true;
     }
   }
-  server.send(200, "text/html", FPSTR(index_m_html));
+  // 3. AP mode
+  if (!connected) {
+    startAPMode();
+    Serial.println("AP mode started");
+  } else {
+    Serial.printf("WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
+  }
 }
 
+// Обработчики API
 void handleList() {
-  String path = server.arg("path");
-  if (path.isEmpty()) path = "/";
-  if (!path.startsWith("/")) path = "/" + path;
-
-  if (isSDBusy()) {
-    server.send(503, "application/json", "{\"success\":false,\"message\":\"SD bus busy\"}");
-    return;
-  }
-
-  File dir = SD.open(path);
-  if (!dir || !dir.isDirectory()) {
-    server.send(404, "application/json", "{\"success\":false,\"message\":\"Directory not found\"}");
-    return;
-  }
-
-  StaticJsonDocument<4096> doc;
-  doc["success"] = true;
-  JsonArray arr = doc.createNestedArray("files");
-
-  while (true) {
-    File entry = dir.openNextFile();
-    if (!entry) break;
-    JsonObject obj = arr.createNestedObject();
-    obj["name"] = String(entry.name());
-    obj["isDir"] = entry.isDirectory();
-    obj["size"] = entry.size();
-    // Можно добавить время модификации, но не обязательно
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String dir = server.arg("dir");
+  if (dir.length() == 0) dir = "/";
+  if (!dir.endsWith("/")) dir += "/";
+  if (!SD.exists(dir)) { server.send(404, "text/plain", "Directory not found"); return; }
+  File root = SD.open(dir);
+  if (!root || !root.isDirectory()) { server.send(500, "text/plain", "Failed to open directory"); return; }
+  String json = "{\"files\":[";
+  File entry = root.openNextFile();
+  bool first = true;
+  while (entry) {
+    String name = entry.name();
+    if (name != "." && name != "..") {
+      if (!first) json += ",";
+      first = false;
+      bool isDir = entry.isDirectory();
+      String fullPath = dir + name;
+      json += "{\"name\":\"" + name + "\",\"path\":\"" + fullPath + "\",\"type\":\"" + (isDir ? "dir" : "file") + "\",\"size\":" + String(entry.size()) + "}";
+    }
     entry.close();
+    entry = root.openNextFile();
   }
-  dir.close();
-
-  String output;
-  serializeJson(doc, output);
-  server.send(200, "application/json", output);
+  root.close();
+  json += "]}";
+  server.send(200, "application/json", json);
 }
 
-void handleDownload() {
-  String filePath = server.arg("file");
-  if (filePath.isEmpty()) {
-    server.send(400, "text/plain", "Missing file parameter");
-    return;
-  }
-  if (!filePath.startsWith("/")) filePath = "/" + filePath;
+File uploadFile;
 
-  if (isSDBusy()) {
-    server.send(503, "text/plain", "SD bus busy");
-    return;
+void handleFileUpload() {
+  if (!sd_ok) return;
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    String filename = upload.filename;
+    // filename содержит полный путь (мы передали path + name)
+    if (!filename.startsWith("/")) filename = "/" + filename;
+    // Создаём промежуточные директории
+    int slash = filename.lastIndexOf('/');
+    if (slash > 0) {
+      String dir = filename.substring(0, slash);
+      if (!SD.exists(dir)) {
+        // Создаём рекурсивно
+        String current = "";
+        int start = 1;
+        while (true) {
+          int next = dir.indexOf('/', start);
+          if (next == -1) {
+            current += dir.substring(start);
+            if (current.length() > 0) SD.mkdir(current);
+            break;
+          } else {
+            current += dir.substring(start, next + 1);
+            if (!SD.exists(current)) SD.mkdir(current);
+            start = next + 1;
+          }
+        }
+      }
+    }
+    uploadFile = SD.open(filename, "w");
+    if (!uploadFile) {
+      Serial.println("Failed to open upload file: " + filename);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (uploadFile) uploadFile.close();
+    setLED(false); // выключаем LED после загрузки
   }
-
-  if (!SD.exists(filePath)) {
-    server.send(404, "text/plain", "File not found");
-    return;
-  }
-
-  File f = SD.open(filePath, FILE_READ);
-  if (!f) {
-    server.send(500, "text/plain", "Cannot open file");
-    return;
-  }
-
-  server.sendHeader("Content-Type", "application/octet-stream");
-  server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(f.name()) + "\"");
-  server.streamFile(f, "application/octet-stream");
-  f.close();
 }
 
 void handleUpload() {
-  // Загрузка файла через multipart/form-data
-  // Используем глобальные переменные uploadFile и uploadPath
-  HTTPUpload &upload = server.upload();
-  if (upload.status == UPLOAD_FILE_START) {
-    String path = server.arg("path");
-    if (path.isEmpty()) path = "/";
-    if (!path.startsWith("/")) path = "/" + path;
-    uploadPath = path;
-    String filename = upload.filename;
-    // Защита от path traversal
-    filename.replace("..", "");
-    filename.replace("/", "");
-    String fullPath = uploadPath;
-    if (!fullPath.endsWith("/")) fullPath += "/";
-    fullPath += filename;
-
-    if (isSDBusy()) {
-      server.send(503, "text/plain", "SD bus busy");
-      uploadFile = File();
-      return;
-    }
-
-    uploadFile = SD.open(fullPath, FILE_WRITE);
-    if (!uploadFile) {
-      server.send(500, "text/plain", "Cannot create file");
-      uploadFile = File();
-    }
-    uploadSuccess = false;
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (uploadFile) {
-      uploadFile.write(upload.buf, upload.currentSize);
-    }
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (uploadFile) {
-      uploadFile.close();
-      uploadSuccess = true;
-    }
-    server.send(200, "text/plain", "Upload successful");
-  } else {
-    if (uploadFile) uploadFile.close();
-    server.send(500, "text/plain", "Upload error");
-  }
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  setLED(true); // индикация загрузки
+  server.send(200, "text/plain", "OK");
 }
 
-// Вспомогательная функция для парсинга JSON тела
-bool parseJsonBody(StaticJsonDocument<256> &doc) {
-  if (!server.hasArg("plain")) return false;
-  DeserializationError err = deserializeJson(doc, server.arg("plain"));
-  return !err;
+void handleDownload() {
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String path = server.arg("path");
+  if (path.length() == 0 || !SD.exists(path)) { server.send(404, "text/plain", "File not found"); return; }
+  File file = SD.open(path, "r");
+  if (!file) { server.send(500, "text/plain", "Failed to open file"); return; }
+  String contentType = "application/octet-stream";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
+  else if (path.endsWith(".png")) contentType = "image/png";
+  else if (path.endsWith(".gcode")) contentType = "text/plain";
+  server.streamFile(file, contentType);
+  file.close();
 }
 
 void handleDelete() {
-  StaticJsonDocument<256> doc;
-  if (!parseJsonBody(doc)) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
-    return;
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String path = server.arg("path");
+  if (path.length() == 0) { server.send(400, "text/plain", "No path"); return; }
+  if (SD.exists(path)) {
+    if (SD.remove(path)) server.send(200, "text/plain", "OK");
+    else server.send(500, "text/plain", "Delete failed");
+  } else {
+    server.send(404, "text/plain", "Not found");
   }
-  const char* path = doc["path"];
-  if (!path) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Missing path\"}");
-    return;
-  }
-  String p = String(path);
-  if (!p.startsWith("/")) p = "/" + p;
-
-  if (isSDBusy()) {
-    server.send(503, "application/json", "{\"success\":false,\"message\":\"SD bus busy\"}");
-    return;
-  }
-
-  if (!SD.exists(p)) {
-    server.send(404, "application/json", "{\"success\":false,\"message\":\"File not found\"}");
-    return;
-  }
-
-  bool ok = SD.remove(p);
-  if (!ok) {
-    // Попробуем удалить как папку (пустую)
-    ok = SD.rmdir(p);
-  }
-  server.send(200, "application/json", ok ? "{\"success\":true}" : "{\"success\":false,\"message\":\"Delete failed\"}");
 }
 
 void handleRename() {
-  StaticJsonDocument<256> doc;
-  if (!parseJsonBody(doc)) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
-    return;
-  }
-  const char* oldPath = doc["oldPath"];
-  const char* newPath = doc["newPath"];
-  if (!oldPath || !newPath) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Missing paths\"}");
-    return;
-  }
-  String oldP = String(oldPath), newP = String(newPath);
-  if (!oldP.startsWith("/")) oldP = "/" + oldP;
-  if (!newP.startsWith("/")) newP = "/" + newP;
-
-  if (isSDBusy()) {
-    server.send(503, "application/json", "{\"success\":false,\"message\":\"SD bus busy\"}");
-    return;
-  }
-
-  if (!SD.exists(oldP)) {
-    server.send(404, "application/json", "{\"success\":false,\"message\":\"Source not found\"}");
-    return;
-  }
-
-  bool ok = SD.rename(oldP.c_str(), newP.c_str());
-  server.send(200, "application/json", ok ? "{\"success\":true}" : "{\"success\":false,\"message\":\"Rename failed\"}");
-}
-
-void handleMove() {
-  // Перемещение аналогично переименованию (если на одном томе)
-  // Используем rename, но если между разными томами – не поддерживается.
-  // Упрощённо: используем rename.
-  handleRename(); // переименование и перемещение – одна операция в FAT
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String body = server.arg("plain");
+  // Простейший парсинг JSON: {"oldPath":"...", "newPath":"..."}
+  int oldPos = body.indexOf("\"oldPath\":\"");
+  int newPos = body.indexOf("\"newPath\":\"");
+  if (oldPos < 0 || newPos < 0) { server.send(400, "text/plain", "Invalid JSON"); return; }
+  int oldStart = oldPos + 11;
+  int oldEnd = body.indexOf('"', oldStart);
+  int newStart = newPos + 11;
+  int newEnd = body.indexOf('"', newStart);
+  if (oldEnd < 0 || newEnd < 0) { server.send(400, "text/plain", "Invalid JSON"); return; }
+  String oldPath = body.substring(oldStart, oldEnd);
+  String newPath = body.substring(newStart, newEnd);
+  if (oldPath.length() == 0 || newPath.length() == 0) { server.send(400, "text/plain", "Empty paths"); return; }
+  if (!SD.exists(oldPath)) { server.send(404, "text/plain", "Source not found"); return; }
+  if (SD.rename(oldPath, newPath)) server.send(200, "text/plain", "OK");
+  else server.send(500, "text/plain", "Rename failed");
 }
 
 void handleMkdir() {
-  StaticJsonDocument<256> doc;
-  if (!parseJsonBody(doc)) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
-    return;
-  }
-  const char* path = doc["path"];
-  if (!path) {
-    server.send(400, "application/json", "{\"success\":false,\"message\":\"Missing path\"}");
-    return;
-  }
-  String p = String(path);
-  if (!p.startsWith("/")) p = "/" + p;
-
-  if (isSDBusy()) {
-    server.send(503, "application/json", "{\"success\":false,\"message\":\"SD bus busy\"}");
-    return;
-  }
-
-  bool ok = SD.mkdir(p);
-  server.send(200, "application/json", ok ? "{\"success\":true}" : "{\"success\":false,\"message\":\"Mkdir failed\"}");
-}
-
-String getThumbnailPath(const String& gcodePath) {
-  // Ищем файл с тем же именем, но .jpg или .png
-  String base = gcodePath.substring(0, gcodePath.lastIndexOf('.'));
-  String jpg = base + ".jpg";
-  String png = base + ".png";
-  if (SD.exists(jpg)) return jpg;
-  if (SD.exists(png)) return png;
-  // Ищем логотип в корне
-  if (SD.exists("/logo.jpg")) return "/logo.jpg";
-  if (SD.exists("/logo.png")) return "/logo.png";
-  return ""; // нет миниатюры
-}
-
-void sendThumbnailPlaceholder() {
-  // Отдаём серый SVG
-  server.send(200, "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='300' height='300' fill='#555'/></svg>");
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String body = server.arg("plain");
+  int pathPos = body.indexOf("\"path\":\"");
+  if (pathPos < 0) { server.send(400, "text/plain", "Invalid JSON"); return; }
+  int pathStart = pathPos + 8;
+  int pathEnd = body.indexOf('"', pathStart);
+  if (pathEnd < 0) { server.send(400, "text/plain", "Invalid JSON"); return; }
+  String path = body.substring(pathStart, pathEnd);
+  if (path.length() == 0) { server.send(400, "text/plain", "Empty path"); return; }
+  if (SD.mkdir(path)) server.send(200, "text/plain", "OK");
+  else server.send(500, "text/plain", "Mkdir failed");
 }
 
 void handleThumbnail() {
-  String file = server.arg("file");
-  if (file.isEmpty()) {
-    sendThumbnailPlaceholder();
-    return;
+  if (!sd_ok) { server.send(500, "text/plain", "SD not available"); return; }
+  String path = server.arg("path");
+  if (path.length() == 0) { server.send(400, "text/plain", "No path"); return; }
+  // Если запрошен .gcode, ищем миниатюру
+  String thumbPath = "";
+  if (path.endsWith(".gcode") || path.endsWith(".gco")) {
+    // Ищем рядом файл с тем же именем, но .jpg или .png
+    String base = path.substring(0, path.lastIndexOf('.'));
+    if (SD.exists(base + ".jpg")) thumbPath = base + ".jpg";
+    else if (SD.exists(base + ".png")) thumbPath = base + ".png";
+    // Если нет, ищем logo в корне
+    if (thumbPath.length() == 0) {
+      if (SD.exists("/logo.jpg")) thumbPath = "/logo.jpg";
+      else if (SD.exists("/logo.png")) thumbPath = "/logo.png";
+    }
   }
-  if (!file.startsWith("/")) file = "/" + file;
-
-  if (isSDBusy()) {
-    sendThumbnailPlaceholder();
-    return;
+  if (thumbPath.length() > 0 && SD.exists(thumbPath)) {
+    File file = SD.open(thumbPath, "r");
+    if (file) {
+      String contentType = thumbPath.endsWith(".jpg") ? "image/jpeg" : "image/png";
+      server.streamFile(file, contentType);
+      file.close();
+      return;
+    }
   }
-
-  // Проверяем, существует ли сам файл (для проверки)
-  if (!SD.exists(file)) {
-    sendThumbnailPlaceholder();
-    return;
-  }
-
-  String thumbPath = getThumbnailPath(file);
-  if (thumbPath.isEmpty() || !SD.exists(thumbPath)) {
-    sendThumbnailPlaceholder();
-    return;
-  }
-
-  File f = SD.open(thumbPath, FILE_READ);
-  if (!f) {
-    sendThumbnailPlaceholder();
-    return;
-  }
-
-  // Определяем MIME по расширению
-  String contentType = "image/jpeg";
-  if (thumbPath.endsWith(".png")) contentType = "image/png";
-
-  server.sendHeader("Content-Type", contentType);
-  server.streamFile(f, contentType);
-  f.close();
+  // Заглушка: серый 1x1 PNG
+  const uint8_t grayPixelPng[] PROGMEM = {
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+    0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+  };
+  server.send_P(200, "image/png", (const char*)grayPixelPng, sizeof(grayPixelPng));
 }
 
-void handleNotFound() {
-  // Если запрошен файл с SD (например, картинка) – разрешим?
-  // Но для безопасности не разрешаем прямой доступ к SD, только через API.
-  // Отдаём 404.
-  server.send(404, "text/plain", "Not Found");
+void serveIndex() {
+  // Определяем мобильный по User-Agent
+  String ua = server.header("User-Agent");
+  bool isMobile = ua.indexOf("Mobile") >= 0 || ua.indexOf("Android") >= 0 || ua.indexOf("iPhone") >= 0;
+  String indexPath = isMobile ? "/index_m.html" : "/index.html";
+  if (sd_ok && SD.exists(indexPath)) {
+    File file = SD.open(indexPath, "r");
+    if (file) {
+      server.streamFile(file, "text/html");
+      file.close();
+      return;
+    }
+  }
+  // Fallback встроенный
+  server.send_P(200, "text/html", isMobile ? INDEX_M_HTML : INDEX_HTML);
 }
-
-// ============================================================================
-// SETUP & LOOP
-// ============================================================================
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n\n=== simplefmfystec ===\n");
-
   pinMode(LED, OUTPUT);
-  digitalWrite(LED, LOW);
+  setLED(false); // выключен
   pinMode(CS_SENSE, INPUT_PULLUP);
 
-  // Инициализация SD и подключение WiFi
-  connectWiFi();
+  // Инициализация SD
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD init failed!");
+    sd_ok = false;
+    blinkLED(5, 100); // быстрая индикация ошибки SD
+  } else {
+    sd_ok = true;
+    Serial.println("SD initialized.");
+  }
 
-  // Настройка маршрутов
-  server.on("/", HTTP_GET, []() {
-    // Определяем мобильный User-Agent
-    String ua = server.header("User-Agent");
-    if (ua.indexOf("Mobile") != -1 || ua.indexOf("Android") != -1 || ua.indexOf("iPhone") != -1) {
-      handleMobileRoot();
-    } else {
-      handleRoot();
+  // WiFi
+  initWiFi();
+  if (WiFi.status() == WL_CONNECTED) {
+    setLED(true); // постоянное свечение при подключении
+  } else {
+    // AP mode
+    setLED(true);
+  }
+
+  // Маршруты API
+  server.on("/api/list", HTTP_GET, handleList);
+  server.on("/api/upload", HTTP_POST, handleUpload, handleFileUpload);
+  server.on("/api/download", HTTP_GET, handleDownload);
+  server.on("/api/delete", HTTP_POST, handleDelete);
+  server.on("/api/rename", HTTP_POST, handleRename);
+  server.on("/api/mkdir", HTTP_POST, handleMkdir);
+  server.on("/api/thumbnail", HTTP_GET, handleThumbnail);
+
+  // Корневой маршрут
+  server.on("/", HTTP_GET, serveIndex);
+  // Также отдаём index.html напрямую
+  server.on("/index.html", HTTP_GET, []() {
+    if (sd_ok && SD.exists("/index.html")) {
+      File file = SD.open("/index.html", "r");
+      if (file) { server.streamFile(file, "text/html"); file.close(); return; }
     }
+    server.send_P(200, "text/html", INDEX_HTML);
   });
-  server.on("/index.html", HTTP_GET, handleRoot);
-  server.on("/index_m.html", HTTP_GET, handleMobileRoot);
-  server.on("/list", HTTP_GET, handleList);
-  server.on("/download", HTTP_GET, handleDownload);
-  server.on("/upload", HTTP_POST, [](){ server.send(200, "text/plain", "Upload finished"); }, handleUpload);
-  server.on("/delete", HTTP_POST, handleDelete);
-  server.on("/rename", HTTP_POST, handleRename);
-  server.on("/move", HTTP_POST, handleMove);
-  server.on("/mkdir", HTTP_POST, handleMkdir);
-  server.on("/thumbnail", HTTP_GET, handleThumbnail);
-  server.onNotFound(handleNotFound);
+  server.on("/index_m.html", HTTP_GET, []() {
+    if (sd_ok && SD.exists("/index_m.html")) {
+      File file = SD.open("/index_m.html", "r");
+      if (file) { server.streamFile(file, "text/html"); file.close(); return; }
+    }
+    server.send_P(200, "text/html", INDEX_M_HTML);
+  });
 
   server.begin();
-  Serial.println("HTTP server started");
+  Serial.println("HTTP server started.");
 }
 
 void loop() {
   server.handleClient();
-  // Можно добавить мигание LED при активности SD, но не обязательно.
 }
