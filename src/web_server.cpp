@@ -1,248 +1,112 @@
-#include "web_server.h"
+#include "sd_manager.h"
 #include "config.h"
-#include "html_index.h"
-#include "html_index_m.h"
-#include <FS.h>
-#include <AsyncTCP.h>
+#include <SPI.h>
 
-void WebServer::begin(SDManager* sdManager) {
-    sd = sdManager;
-    setupRoutes();
-    server.begin();
+bool SDManager::begin() {
+    pinMode(csSensePin, INPUT_PULLUP);
+    if (!sd.begin(SD_CS, SPI_FULL_SPEED)) {
+        ready = false;
+        return false;
+    }
+    ready = true;
+    return true;
 }
 
-void WebServer::setupRoutes() {
-    // Главная страница
-    server.on("/", HTTP_GET, [this](AsyncWebServerRequest *request){
-        serveStaticPage(request, "/index.html", INDEX_HTML);
-    });
-    server.on("/index.html", HTTP_GET, [this](AsyncWebServerRequest *request){
-        serveStaticPage(request, "/index.html", INDEX_HTML);
-    });
-    server.on("/index_m.html", HTTP_GET, [this](AsyncWebServerRequest *request){
-        serveStaticPage(request, "/index_m.html", INDEX_M_HTML);
-    });
+bool SDManager::isReady() { return ready; }
 
-    // API
-    server.on("/api/files", HTTP_GET, [this](AsyncWebServerRequest *request){ handleFiles(request); });
-    server.on("/api/download", HTTP_GET, [this](AsyncWebServerRequest *request){ handleDownload(request); });
-    server.on("/api/delete", HTTP_POST, [this](AsyncWebServerRequest *request){ 
-        // Тело в JSON
-        AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", "OK");
-        request->send(response);
-    }, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-        // Здесь нужно обработать JSON, но для простоты используем отдельный обработчик в теле POST
-        // AsyncWebServer не предоставляет простого доступа к телу в POST, поэтому обработаем в onBody.
-        // Оставим заглушку: мы переопределим onBody в основном коде.
-    });
-    // Но в текущей версии AsyncWebServer сложно обрабатывать JSON в POST через стандартные handlers.
-    // Используем другой подход: будем читать тело в onBody и разбирать.
-    // Я упрощу: будем использовать один универсальный обработчик для POST с JSON.
-    server.on("/api/delete", HTTP_POST, [this](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-        // Обработка тела
-        if (index == 0) {
-            String body = "";
-            for (size_t i = 0; i < len; i++) body += (char)data[i];
-            DynamicJsonDocument doc(1024);
-            deserializeJson(doc, body);
-            handleDelete(request, doc.as<JsonVariant>());
-        }
-    });
-    server.on("/api/rename", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-        if (index == 0) {
-            String body = "";
-            for (size_t i = 0; i < len; i++) body += (char)data[i];
-            DynamicJsonDocument doc(1024);
-            deserializeJson(doc, body);
-            handleRename(request, doc.as<JsonVariant>());
-        }
-    });
-    server.on("/api/move", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-        if (index == 0) {
-            String body = "";
-            for (size_t i = 0; i < len; i++) body += (char)data[i];
-            DynamicJsonDocument doc(1024);
-            deserializeJson(doc, body);
-            handleMove(request, doc.as<JsonVariant>());
-        }
-    });
-    server.on("/api/mkdir", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-        if (index == 0) {
-            String body = "";
-            for (size_t i = 0; i < len; i++) body += (char)data[i];
-            DynamicJsonDocument doc(1024);
-            deserializeJson(doc, body);
-            handleMkdir(request, doc.as<JsonVariant>());
-        }
-    });
-
-    // Загрузка файла
-    server.on("/api/upload", HTTP_POST, [](AsyncWebServerRequest *request){}, [this](AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){
-        handleUpload(request, filename, index, data, len, final);
-    });
-
-    // Миниатюра
-    server.on("/api/thumbnail", HTTP_GET, [this](AsyncWebServerRequest *request){ handleThumbnail(request); });
+bool SDManager::isBusy() {
+    return digitalRead(csSensePin) == LOW;
 }
 
-void WebServer::serveStaticPage(AsyncWebServerRequest *request, const String& pageName, const char* fallbackHtml) {
-    // Проверяем наличие файла на SD
-    if (sd->exists(pageName)) {
-        File f = sd->openFile(pageName, "r");
-        if (f) {
-            request->send(f, "text/html");
-            f.close();
-            return;
-        }
-    }
-    // Иначе отдаём встроенный
-    request->send(200, "text/html", fallbackHtml);
-}
-
-void WebServer::handleFiles(AsyncWebServerRequest *request) {
-    String path = "/";
-    if (request->hasParam("path")) {
-        path = request->getParam("path")->value();
-        if (!path.startsWith("/")) path = "/" + path;
-    }
-    String json;
-    if (!sd->listDirectory(path, json)) {
-        request->send(500, "application/json", "{\"error\":\"Failed to list directory\"}");
-        return;
-    }
-    request->send(200, "application/json", "{\"path\":\"" + path + "\",\"items\":" + json + "}");
-}
-
-void WebServer::handleDownload(AsyncWebServerRequest *request) {
-    if (!request->hasParam("path")) {
-        request->send(400, "text/plain", "Missing path");
-        return;
-    }
-    String path = request->getParam("path")->value();
-    if (!sd->exists(path)) {
-        request->send(404, "text/plain", "File not found");
-        return;
-    }
-    File f = sd->openFile(path, "r");
-    if (!f) {
-        request->send(500, "text/plain", "Cannot open file");
-        return;
-    }
-    request->send(f, "application/octet-stream", String(f.name()));
+bool SDManager::isDirectory(const String& path) {
+    if (!ready || isBusy()) return false;
+    FsFile f = sd.open(path.c_str());
+    if (!f) return false;
+    bool isDir = f.isDirectory();
     f.close();
+    return isDir;
 }
 
-void WebServer::handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-    static File file;
-    if (index == 0) {
-        // Открываем файл для записи (создаём)
-        String path = "/" + filename;
-        file = sd->openFile(path, "w");
-        if (!file) {
-            request->send(500, "text/plain", "Cannot create file");
-            return;
-        }
-    }
-    if (file) {
-        file.write(data, len);
-    }
-    if (final) {
-        if (file) {
-            file.close();
-            request->send(200, "text/plain", "OK");
-        } else {
-            request->send(500, "text/plain", "Upload error");
-        }
-    }
+bool SDManager::exists(const String& path) {
+    if (!ready || isBusy()) return false;
+    return sd.exists(path.c_str());
 }
 
-void WebServer::handleDelete(AsyncWebServerRequest *request, JsonVariant& json) {
-    if (!json.containsKey("path")) {
-        request->send(400, "text/plain", "Missing path");
-        return;
-    }
-    String path = json["path"].as<String>();
-    if (!sd->exists(path)) {
-        request->send(404, "text/plain", "Not found");
-        return;
-    }
-    if (sd->removePath(path)) {
-        request->send(200, "text/plain", "OK");
+bool SDManager::createDirectory(const String& path) {
+    if (!ready || isBusy()) return false;
+    return sd.mkdir(path.c_str());
+}
+
+bool SDManager::removePath(const String& path) {
+    if (!ready || isBusy()) return false;
+    if (isDirectory(path)) {
+        return sd.rmdir(path.c_str());
     } else {
-        request->send(500, "text/plain", "Delete failed");
+        return sd.remove(path.c_str());
     }
 }
 
-void WebServer::handleRename(AsyncWebServerRequest *request, JsonVariant& json) {
-    if (!json.containsKey("path") || !json.containsKey("newname")) {
-        request->send(400, "text/plain", "Missing path or newname");
-        return;
-    }
-    String oldPath = json["path"].as<String>();
-    String newName = json["newname"].as<String>();
-    // Определяем директорию старого файла
-    int lastSlash = oldPath.lastIndexOf('/');
-    String dir = (lastSlash >= 0) ? oldPath.substring(0, lastSlash + 1) : "/";
-    String newPath = dir + newName;
-    if (sd->renamePath(oldPath, newPath)) {
-        request->send(200, "text/plain", "OK");
-    } else {
-        request->send(500, "text/plain", "Rename failed");
-    }
+bool SDManager::renamePath(const String& oldPath, const String& newPath) {
+    if (!ready || isBusy()) return false;
+    return sd.rename(oldPath.c_str(), newPath.c_str());
 }
 
-void WebServer::handleMove(AsyncWebServerRequest *request, JsonVariant& json) {
-    if (!json.containsKey("source") || !json.containsKey("dest")) {
-        request->send(400, "text/plain", "Missing source or dest");
-        return;
-    }
-    String src = json["source"].as<String>();
-    String dst = json["dest"].as<String>();
-    if (sd->movePath(src, dst)) {
-        request->send(200, "text/plain", "OK");
-    } else {
-        request->send(500, "text/plain", "Move failed");
-    }
+bool SDManager::movePath(const String& src, const String& dst) {
+    return renamePath(src, dst);
 }
 
-void WebServer::handleMkdir(AsyncWebServerRequest *request, JsonVariant& json) {
-    if (!json.containsKey("path")) {
-        request->send(400, "text/plain", "Missing path");
-        return;
-    }
-    String path = json["path"].as<String>();
-    if (sd->createDirectory(path)) {
-        request->send(200, "text/plain", "OK");
-    } else {
-        request->send(500, "text/plain", "Mkdir failed");
-    }
+FsFile SDManager::openFile(const String& path, uint8_t oflag) {
+    if (!ready || isBusy()) return FsFile();
+    return sd.open(path.c_str(), oflag);
 }
 
-void WebServer::handleThumbnail(AsyncWebServerRequest *request) {
-    if (!request->hasParam("path")) {
-        request->send(400, "text/plain", "Missing path");
-        return;
+bool SDManager::listDirectory(const String& path, String& output) {
+    if (!ready || isBusy()) return false;
+    FsFile dir = sd.open(path.c_str());
+    if (!dir || !dir.isDirectory()) return false;
+    output = "[";
+    bool first = true;
+    while (true) {
+        FsFile entry = dir.openNextFile();
+        if (!entry) break;
+        if (!first) output += ",";
+        first = false;
+        output += "{\"name\":\"" + String(entry.name()) + "\",";
+        output += "\"type\":\"" + String(entry.isDirectory() ? "dir" : "file") + "\",";
+        output += "\"size\":" + String(entry.size()) + ",";
+        output += "\"modified\":\"" + getModTime(entry.name()) + "\"}";
+        entry.close();
     }
-    String path = request->getParam("path")->value();
-    // Получаем путь к миниатюре
-    String thumb = sd->getThumbnailPath(path);
-    if (thumb.length() > 0) {
-        // Отдаём файл
-        File f = sd->openFile(thumb, "r");
-        if (f) {
-            String contentType = thumb.endsWith(".jpg") ? "image/jpeg" : "image/png";
-            request->send(f, contentType);
-            f.close();
-            return;
-        }
+    output += "]";
+    dir.close();
+    return true;
+}
+
+String SDManager::getModTime(const String& path) {
+    return "";
+}
+
+size_t SDManager::getFileSize(const String& path) {
+    if (!ready || isBusy()) return 0;
+    FsFile f = sd.open(path.c_str());
+    if (!f) return 0;
+    size_t s = f.size();
+    f.close();
+    return s;
+}
+
+String SDManager::getThumbnailPath(const String& gcodePath) {
+    int lastDot = gcodePath.lastIndexOf('.');
+    String base = (lastDot > 0) ? gcodePath.substring(0, lastDot) : gcodePath;
+    String candidates[2] = {base + ".jpg", base + ".png"};
+    for (int i = 0; i < 2; i++) {
+        if (exists(candidates[i])) return candidates[i];
     }
-    // Заглушка: серый квадрат 300x300 (закодирован как PNG)
-    // Для простоты отдадим небольшой PNG, закодированный в PROGMEM.
-    // Можно сгенерировать на лету, но для экономии используем статический массив.
-    // Здесь я вставлю минимальный PNG (серый) - в реальном проекте нужно добавить.
-    // Пока отдаём текст, но лучше использовать реальное изображение.
-    // Так как это пример, я отдам простой SVG? Но лучше PNG.
-    // Для краткости я пропущу реализацию генерации PNG и отдам 404.
-    // В реальном проекте следует встроить данные PNG.
-    request->send(404, "text/plain", "Thumbnail not found");
+    if (exists("/logo.jpg")) return "/logo.jpg";
+    if (exists("/logo.png")) return "/logo.png";
+    return "";
+}
+
+void SDManager::setCS_SENSE(int pin) {
+    csSensePin = pin;
 }
