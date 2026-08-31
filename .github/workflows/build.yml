@@ -24,3 +24,8 @@ jobs:
         run: pip install --upgrade platformio
       - name: Build
         run: pio run
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: .pio/build/fysetc_sd_wifi/firmware.bin
