@@ -2,7 +2,7 @@
 #define SD_MANAGER_H
 
 #include <SdFat.h>
-#include <FS.h>  // для File
+#include <Arduino.h>
 
 class SDManager {
 public:
@@ -14,13 +14,12 @@ public:
     bool removePath(const String& path);
     bool renamePath(const String& oldPath, const String& newPath);
     bool movePath(const String& src, const String& dst);
-    File openFile(const String& path, const char* mode = "r");
+    FsFile openFile(const String& path, uint8_t oflag = O_RDONLY);
     bool listDirectory(const String& path, String& output);
     String getModTime(const String& path);
     size_t getFileSize(const String& path);
-    // Получение миниатюры: возвращает путь к файлу изображения, если найден
     String getThumbnailPath(const String& gcodePath);
-    void setCS_SENSE(int pin); // для проверки занятости шины
+    void setCS_SENSE(int pin);
 private:
     SdFat sd;
     bool ready = false;
