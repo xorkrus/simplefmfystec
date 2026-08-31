@@ -6,7 +6,7 @@
 bool WiFiManager::parseINI(const String& path, String& ssid, String& password) {
     SDManager sd;
     if (!sd.begin()) return false;
-    File f = sd.openFile(path, "r");
+    FsFile f = sd.openFile(path);
     if (!f) return false;
     bool inWifi = false;
     while (f.available()) {
