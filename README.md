@@ -1,37 +1,27 @@
-# SimpleFM FYSETC – SD WiFi File Manager
+# simplefmfystec – SD WiFi File Manager for FYSETC
 
-[![Build Status](https://github.com/yourusername/simplefmfystec/actions/workflows/build.yml/badge.svg)](https://github.com/yourusername/simplefmfystec/actions/workflows/build.yml)
+[![Build Firmware](https://github.com/yourname/simplefmfystec/actions/workflows/build.yml/badge.svg)](https://github.com/yourname/simplefmfystec/actions/workflows/build.yml)
 
-Прошивка для **FYSETC SD WiFi** (ESP8285) – превращает устройство в полноценный файловый менеджер для SD-карты с веб-интерфейсом.
+Прошивка для устройства **FYSETC SD WiFi** (ESP8285), превращающая его в удобный веб-файловый менеджер для SD‑карты.
 
-## Возможности
+## Особенности
 
-- Просмотр, загрузка, скачивание, удаление, переименование, перемещение файлов и папок.
-- Drag & Drop загрузка с индикатором прогресса.
-- Умные миниатюры для G-кода (300x300).
-- Два варианта интерфейса: десктопный и мобильный.
-- Настройка WiFi через SETUP.INI на SD, fallback и собственная точка доступа.
-- Кастомизация интерфейса через свои HTML-файлы на SD.
+- **Загрузка файлов** – перетаскиванием (Drag & Drop) или через кнопку выбора, с индикацией прогресса.
+- **Управление файлами** – удаление, переименование, перемещение, создание папок.
+- **Скачивание** – прямая выдача файлов из браузера.
+- **Умные миниатюры (300×300)** – предпросмотр моделей `.gcode`:
+  - ищется `.jpg` или `.png` с тем же именем в той же папке;
+  - если нет – используется `logo.jpg` / `logo.png` из корня SD;
+  - если и их нет – серая заглушка.
+- **Адаптивный интерфейс** – две версии: десктопная (вертикальное разделение: список слева, превью справа) и мобильная (горизонтальное: превью сверху, список снизу).
+- **Кастомизация** – если на SD есть `index.html` или `index_m.html`, они отдаются вместо встроенных.
 
-## Установка
+## Настройка WiFi
 
-1. Скачайте прошивку (firmware.bin) из [Releases](https://github.com/yourusername/simplefmfystec/releases).
-2. Прошейте устройство через USB-UART (например, при помощи esptool или PlatformIO).
-3. Вставьте SD-карту с файлом SETUP.INI (опционально).
-4. Подайте питание.
+Устройство подключается к сети в следующем порядке:
 
-## Использование
-
-После включения устройство попытается подключиться к WiFi. Если не удастся – создаст точку доступа `sd-card-3dp` (пароль `12345678`).  
-Откройте IP-адрес (выводится в Serial) в браузере и управляйте файлами.
-
-## API
-
-Документация API доступна в разделе [API](API.md).
-
-## Сборка из исходников
-
-```bash
-git clone https://github.com/yourusername/simplefmfystec.git
-cd simplefmfystec
-pio run
+1. **SD → SETUP.INI** – если в корне SD есть файл `SETUP.INI` вида:
+   ```ini
+   [WIFI]
+   SSID=MyNetwork
+   PASSWORD=MyPass
