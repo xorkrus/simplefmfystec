@@ -12,7 +12,6 @@ ESP8266WebServer server(HTTP_PORT);
 SdFat sd;
 FsFile uploadFile;
 bool sdAvailable = false;
-String currentWifiStatus = "";
 unsigned long lastLedToggle = 0;
 int ledState = LED_ON;
 
@@ -38,6 +37,8 @@ String getContentType(String filename);
 bool deleteRecursive(String path);
 void sendJsonError(int code, String message);
 void updateLed();
+String getFileName(FsFile &f);
+void streamFsFile(FsFile &f, const String &contentType, const String &downloadName = "");
 
 // Состояния LED
 enum LedState {
@@ -55,24 +56,19 @@ void setup() {
   delay(100);
   Serial.println("\nStarting SD WiFi File Manager...");
 
-  // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON);
-  // CS_SENSE: используем INPUT (подтяжка на плате)
   pinMode(CS_SENSE, INPUT);
   Serial.print("CS_SENSE initial state: ");
   Serial.println(digitalRead(CS_SENSE) ? "HIGH" : "LOW");
 
-  // Инициализация SD
   initSD();
   if (!sdAvailable) {
     currentLedState = LED_STATE_SD_FAIL;
   }
 
-  // Подключение Wi-Fi
   initWiFi();
 
-  // Настройка веб-сервера
   server.on("/", handleRoot);
   server.on("/api/list", HTTP_GET, handleApiList);
   server.on("/api/upload", HTTP_POST, [](){ server.send(200, "application/json", "{\"success\":true}"); }, handleFileUpload);
@@ -157,7 +153,6 @@ void startAP() {
   Serial.printf("AP started: %s / %s\n", AP_SSID, AP_PASSWORD);
 }
 
-// Чтение SETUP.INI с SD
 bool readSetupIni(String &ssid, String &password) {
   if (!sdAvailable) return false;
   FsFile f = sd.open(SETUP_INI_FILENAME, O_RDONLY);
@@ -172,7 +167,6 @@ bool readSetupIni(String &ssid, String &password) {
   }
   f.close();
 
-  // Парсинг
   int sectionStart = content.indexOf("[WIFI]");
   if (sectionStart == -1) return false;
   int sectionEnd = content.indexOf('[', sectionStart + 1);
@@ -195,18 +189,13 @@ bool readSetupIni(String &ssid, String &password) {
 // ==================== Инициализация SD ====================
 void initSD() {
   Serial.println("Initializing SD card...");
-  
-  // Настраиваем CS пин
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
-  
-  // Инициализируем SPI
   SPI.begin();
   SPI.setFrequency(4000000);
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
 
-  // Пробуем разные скорости
   bool initOk = false;
   const uint32_t speeds[] = {SD_SCK_MHZ(4), SD_SCK_MHZ(2), SD_SCK_MHZ(1)};
   for (int i = 0; i < 3 && !initOk; i++) {
@@ -232,14 +221,40 @@ void initSD() {
   }
 }
 
-// Проверка занятости шины Marlin
 bool checkBusy() {
-  // Активный уровень LOW: если Marlin управляет шиной, пин притянут к земле.
   if (digitalRead(CS_SENSE) == LOW) {
     Serial.println("SD bus busy (Marlin active)");
     return true;
   }
   return false;
+}
+
+// ==================== Вспомогательная отправка файла ====================
+String getFileName(FsFile &f) {
+  char name[256];
+  if (f.getName(name, sizeof(name))) {
+    return String(name);
+  }
+  return "";
+}
+
+void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
+  String name = downloadName.length() > 0 ? downloadName : getFileName(f);
+  server.sendHeader("Content-Type", contentType);
+  server.sendHeader("Content-Length", String(f.size()));
+  if (downloadName.length() > 0) {
+    server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+  }
+  server.send(200, contentType, ""); // отправляет пустое тело? Лучше использовать client
+  // Более надёжный способ — отправка через client
+  WiFiClient client = server.client();
+  const size_t bufSize = 1024;
+  uint8_t buf[bufSize];
+  size_t n;
+  while ((n = f.read(buf, bufSize)) > 0) {
+    client.write(buf, n);
+  }
+  f.close();
 }
 
 // ==================== Обработчики веб-сервера ====================
@@ -252,18 +267,15 @@ void handleRoot() {
   String userAgent = server.header("User-Agent");
   bool isMobile = userAgent.indexOf("Mobile") != -1 || userAgent.indexOf("Android") != -1;
 
-  // Проверяем наличие пользовательского index.html на SD
   String indexFile = isMobile ? "/index_m.html" : "/index.html";
   if (sdAvailable && sd.exists(indexFile.c_str())) {
     FsFile f = sd.open(indexFile, O_RDONLY);
     if (f) {
-      server.streamFile(f, "text/html");
-      f.close();
+      streamFsFile(f, "text/html");
       return;
     }
   }
 
-  // Fallback встроенный
   if (isMobile) {
     server.send_P(200, "text/html", INDEX_M_HTML);
   } else {
@@ -278,8 +290,6 @@ void handleApiList() {
   String path = server.arg("path");
   if (path.length() == 0) path = "/";
   if (!path.startsWith("/")) path = "/" + path;
-
-  // Проверка безопасности пути
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
   FsFile dir = sd.open(path.c_str(), O_RDONLY);
@@ -295,15 +305,18 @@ void handleApiList() {
 
   dir.rewindDirectory();
   FsFile entry;
+  char nameBuf[256];
   while ((entry = dir.openNextFile())) {
-    if (strlen(entry.name()) == 0) break;
+    if (!entry.getName(nameBuf, sizeof(nameBuf))) continue;
+    if (strlen(nameBuf) == 0) continue;
+
     JsonObject fileObj = files.createNestedObject();
-    fileObj["name"] = entry.name();
+    fileObj["name"] = nameBuf;
     fileObj["size"] = entry.size();
     fileObj["isDir"] = entry.isDirectory();
     String fullPath = path;
     if (!fullPath.endsWith("/")) fullPath += "/";
-    fullPath += entry.name();
+    fullPath += nameBuf;
     fileObj["path"] = fullPath;
     entry.close();
   }
@@ -372,8 +385,7 @@ void handleApiDownload() {
   }
 
   String contentType = getContentType(path);
-  server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(f.name()) + "\"");
-  server.streamFile(f, contentType);
+  streamFsFile(f, contentType, getFileName(f));
   f.close();
 }
 
@@ -515,8 +527,7 @@ void handleApiThumbnail() {
       FsFile f = sd.open(candidates[i].c_str(), O_RDONLY);
       if (f) {
         String ct = getContentType(candidates[i]);
-        server.streamFile(f, ct);
-        f.close();
+        streamFsFile(f, ct);
         return;
       }
     }
@@ -525,16 +536,14 @@ void handleApiThumbnail() {
   if (sd.exists("/logo.jpg")) {
     FsFile f = sd.open("/logo.jpg", O_RDONLY);
     if (f) {
-      server.streamFile(f, "image/jpeg");
-      f.close();
+      streamFsFile(f, "image/jpeg");
       return;
     }
   }
   if (sd.exists("/logo.png")) {
     FsFile f = sd.open("/logo.png", O_RDONLY);
     if (f) {
-      server.streamFile(f, "image/png");
-      f.close();
+      streamFsFile(f, "image/png");
       return;
     }
   }
@@ -552,8 +561,7 @@ void handleNotFound() {
       FsFile f = sd.open(path.c_str(), O_RDONLY);
       if (f) {
         String ct = getContentType(path);
-        server.streamFile(f, ct);
-        f.close();
+        streamFsFile(f, ct);
         return;
       }
     }
@@ -586,8 +594,13 @@ bool deleteRecursive(String path) {
 
   dir.rewindDirectory();
   FsFile entry;
+  char nameBuf[256];
   while ((entry = dir.openNextFile())) {
-    String entryName = entry.name();
+    if (!entry.getName(nameBuf, sizeof(nameBuf))) {
+      entry.close();
+      continue;
+    }
+    String entryName = String(nameBuf);
     if (entryName == "." || entryName == "..") {
       entry.close();
       continue;
