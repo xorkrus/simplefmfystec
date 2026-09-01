@@ -59,9 +59,12 @@ void setup() {
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON); // выключаем светодиод
-  // CS_SENSE: активный LOW, когда Marlin занимает шину.
-  // Используем INPUT_PULLUP, чтобы в нормальном состоянии (шина свободна) пин был HIGH.
-  pinMode(CS_SENSE, INPUT_PULLUP);
+  // CS_SENSE: используем INPUT, так как на плате может быть внешняя подтяжка.
+  // Логика: HIGH = шина свободна, LOW = Marlin занял шину.
+  pinMode(CS_SENSE, INPUT);
+  // Выведем текущее состояние для диагностики
+  Serial.print("CS_SENSE initial state: ");
+  Serial.println(digitalRead(CS_SENSE) ? "HIGH" : "LOW");
 
   // Инициализация SD
   initSD();
@@ -196,15 +199,30 @@ bool readSetupIni(String &ssid, String &password) {
 // ==================== Инициализация SD ====================
 void initSD() {
   Serial.print("Initializing SD card...");
-  // Явно инициализируем SPI с нужными пинами (SCK=14, MISO=12, MOSI=13)
-  SPI.begin();
-  if (!SD.begin(SD_CS)) {
-    Serial.println(" FAILED");
+  // Добавим задержку для стабилизации питания
+  delay(200);
+
+  // Попробуем несколько скоростей SPI
+  bool initOk = false;
+  // Массив скоростей: сначала стандартная, потом пониже
+  const uint32_t speeds[] = {SPI_FULL_SPEED, SPI_HALF_SPEED, SPI_QUARTER_SPEED, SPI_EIGHTH_SPEED};
+  for (int i = 0; i < 4 && !initOk; i++) {
+    Serial.printf(" trying speed %d...", i);
+    if (SD.begin(SD_CS, speeds[i])) {
+      initOk = true;
+      Serial.println(" OK");
+    } else {
+      Serial.print(" failed");
+    }
+  }
+
+  if (!initOk) {
+    Serial.println(" FAILED (all speeds)");
     sdAvailable = false;
     return;
   }
   sdAvailable = true;
-  Serial.println(" OK");
+  Serial.println(" SD initialized successfully");
 }
 
 // Проверка занятости шины Marlin
