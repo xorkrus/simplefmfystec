@@ -25,7 +25,6 @@ void initSD();
 bool checkBusy();
 void handleRoot();
 void handleApiList();
-void handleApiUpload();
 void handleFileUpload();
 void handleApiDownload();
 void handleApiDelete();
@@ -38,7 +37,6 @@ String getContentType(String filename);
 bool deleteRecursive(String path);
 void sendJsonError(int code, String message);
 void updateLed();
-void setLedState(int state);
 
 // Состояния LED
 enum LedState {
@@ -199,39 +197,14 @@ void initSD() {
   // Задержка для стабилизации питания
   delay(500);
 
-  // Пробуем стандартную инициализацию с фиксированной скоростью
-  if (SD.begin(SD_CS, SPI_FULL_SPEED)) {
-    sdAvailable = true;
-    Serial.println(" OK");
-    Serial.print("Card type: ");
-    switch (SD.cardType()) {
-      case SD_CARD_TYPE_SD1: Serial.println("SD1"); break;
-      case SD_CARD_TYPE_SD2: Serial.println("SD2"); break;
-      case SD_CARD_TYPE_SDHC: Serial.println("SDHC"); break;
-      default: Serial.println("Unknown");
-    }
-    Serial.printf("Card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
-    return;
-  }
-
-  // Если не получилось, пробуем HALF_SPEED
-  Serial.print(" failed, trying HALF_SPEED...");
-  if (SD.begin(SD_CS, SPI_HALF_SPEED)) {
-    sdAvailable = true;
-    Serial.println(" OK");
-    return;
-  }
-
-  // Если и это не помогло, пробуем без указания скорости (дефолтная)
-  Serial.print(" failed, trying default...");
+  // Просто вызываем SD.begin, как в оригинальной прошивке ESPWebDAV
   if (SD.begin(SD_CS)) {
     sdAvailable = true;
     Serial.println(" OK");
-    return;
+  } else {
+    sdAvailable = false;
+    Serial.println(" FAILED");
   }
-
-  Serial.println(" FAILED (all attempts)");
-  sdAvailable = false;
 }
 
 // Проверка занятости шины Marlin
