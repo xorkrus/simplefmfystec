@@ -11,9 +11,9 @@
 ESP8266WebServer server(HTTP_PORT);
 File uploadFile;
 bool sdAvailable = false;
-String currentWifiStatus = ""; // для LED индикации
+String currentWifiStatus = "";
 unsigned long lastLedToggle = 0;
-int ledState = LED_ON; // текущее состояние пина
+int ledState = LED_ON;
 
 // Прототипы функций
 void setup();
@@ -42,11 +42,11 @@ void setLedState(int state);
 
 // Состояния LED
 enum LedState {
-  LED_STATE_INIT,        // быстрые вспышки при старте
-  LED_STATE_WIFI_OK,     // медленное мигание (1 Гц)
-  LED_STATE_SD_FAIL,     // очень быстрое мигание (5 Гц)
-  LED_STATE_OK,          // горит постоянно
-  LED_STATE_UPLOADING    // очень быстрое мигание (10 Гц)
+  LED_STATE_INIT,
+  LED_STATE_WIFI_OK,
+  LED_STATE_SD_FAIL,
+  LED_STATE_OK,
+  LED_STATE_UPLOADING
 };
 volatile LedState currentLedState = LED_STATE_INIT;
 bool uploading = false;
@@ -58,11 +58,9 @@ void setup() {
 
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, !LED_ON); // выключаем светодиод
-  // CS_SENSE: используем INPUT, так как на плате может быть внешняя подтяжка.
-  // Логика: HIGH = шина свободна, LOW = Marlin занял шину.
-  pinMode(CS_SENSE, INPUT);
-  // Выведем текущее состояние для диагностики
+  digitalWrite(LED_PIN, !LED_ON);
+  // CS_SENSE: используем INPUT_PULLUP, как в оригинале
+  pinMode(CS_SENSE, INPUT_PULLUP);
   Serial.print("CS_SENSE initial state: ");
   Serial.println(digitalRead(CS_SENSE) ? "HIGH" : "LOW");
 
@@ -131,7 +129,6 @@ void initWiFi() {
   }
 
   if (!connected) {
-    // Пробуем fallback
     Serial.printf("Trying fallback WiFi: %s\n", FALLBACK_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.begin(FALLBACK_SSID, FALLBACK_PASSWORD);
@@ -199,30 +196,42 @@ bool readSetupIni(String &ssid, String &password) {
 // ==================== Инициализация SD ====================
 void initSD() {
   Serial.print("Initializing SD card...");
-  // Добавим задержку для стабилизации питания
-  delay(200);
+  // Задержка для стабилизации питания
+  delay(500);
 
-  // Попробуем несколько скоростей SPI
-  bool initOk = false;
-  // Массив скоростей: сначала стандартная, потом пониже
-  const uint32_t speeds[] = {SPI_FULL_SPEED, SPI_HALF_SPEED, SPI_QUARTER_SPEED, SPI_EIGHTH_SPEED};
-  for (int i = 0; i < 4 && !initOk; i++) {
-    Serial.printf(" trying speed %d...", i);
-    if (SD.begin(SD_CS, speeds[i])) {
-      initOk = true;
-      Serial.println(" OK");
-    } else {
-      Serial.print(" failed");
+  // Пробуем стандартную инициализацию с фиксированной скоростью
+  if (SD.begin(SD_CS, SPI_FULL_SPEED)) {
+    sdAvailable = true;
+    Serial.println(" OK");
+    Serial.print("Card type: ");
+    switch (SD.cardType()) {
+      case SD_CARD_TYPE_SD1: Serial.println("SD1"); break;
+      case SD_CARD_TYPE_SD2: Serial.println("SD2"); break;
+      case SD_CARD_TYPE_SDHC: Serial.println("SDHC"); break;
+      default: Serial.println("Unknown");
     }
-  }
-
-  if (!initOk) {
-    Serial.println(" FAILED (all speeds)");
-    sdAvailable = false;
+    Serial.printf("Card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
     return;
   }
-  sdAvailable = true;
-  Serial.println(" SD initialized successfully");
+
+  // Если не получилось, пробуем HALF_SPEED
+  Serial.print(" failed, trying HALF_SPEED...");
+  if (SD.begin(SD_CS, SPI_HALF_SPEED)) {
+    sdAvailable = true;
+    Serial.println(" OK");
+    return;
+  }
+
+  // Если и это не помогло, пробуем без указания скорости (дефолтная)
+  Serial.print(" failed, trying default...");
+  if (SD.begin(SD_CS)) {
+    sdAvailable = true;
+    Serial.println(" OK");
+    return;
+  }
+
+  Serial.println(" FAILED (all attempts)");
+  sdAvailable = false;
 }
 
 // Проверка занятости шины Marlin
@@ -272,7 +281,7 @@ void handleApiList() {
   if (path.length() == 0) path = "/";
   if (!path.startsWith("/")) path = "/" + path;
 
-  // Проверка безопасности пути (запрет выхода за пределы корня)
+  // Проверка безопасности пути
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
   File dir = SD.open(path.c_str());
@@ -318,7 +327,6 @@ void handleFileUpload() {
     if (path.length() == 0) path = "/";
     if (!path.endsWith("/")) path += "/";
     String filename = upload.filename;
-    // Убираем возможные пути из filename, оставляем только имя
     int slash = filename.lastIndexOf('/');
     if (slash != -1) filename = filename.substring(slash + 1);
     int backslash = filename.lastIndexOf('\\');
@@ -418,7 +426,6 @@ void handleApiRename() {
     return;
   }
 
-  // Формируем новый путь
   int lastSlash = path.lastIndexOf('/');
   String parent = lastSlash == 0 ? "/" : path.substring(0, lastSlash);
   if (parent != "/" && !parent.endsWith("/")) parent += "/";
@@ -455,7 +462,6 @@ void handleApiMove() {
   if (!SD.exists(source)) { sendJsonError(404, "Source not found"); return; }
   if (SD.exists(destination)) { sendJsonError(409, "Destination already exists"); return; }
 
-  // Проверяем, что целевая директория существует
   String destParent = destination;
   int lastSlash = destParent.lastIndexOf('/');
   if (lastSlash > 0) {
@@ -502,7 +508,6 @@ void handleApiThumbnail() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  // Ищем миниатюру: заменяем расширение на .jpg, .jpeg, .png, .gif
   String base = path;
   int dot = base.lastIndexOf('.');
   if (dot != -1) base = base.substring(0, dot);
@@ -519,7 +524,6 @@ void handleApiThumbnail() {
     }
   }
 
-  // Проверяем logo.jpg/logo.png в корне
   if (SD.exists("/logo.jpg")) {
     File f = SD.open("/logo.jpg", FILE_READ);
     if (f) {
@@ -537,18 +541,14 @@ void handleApiThumbnail() {
     }
   }
 
-  // Нет миниатюры
   server.send(404, "application/json", "{\"error\":\"No thumbnail\"}");
 }
 
 void handleNotFound() {
-  // Если запрошен файл на SD, пытаемся отдать его как статический
   String uri = server.uri();
   if (sdAvailable && !checkBusy()) {
     String path = uri;
-    // Декодируем URL
     path.replace("%20", " ");
-    // Убираем начальный слэш
     if (path.startsWith("/")) path = path.substring(1);
     if (path.length() > 0 && SD.exists(path.c_str())) {
       File f = SD.open(path.c_str(), FILE_READ);
@@ -623,23 +623,22 @@ void updateLed() {
 
   switch (currentLedState) {
     case LED_STATE_INIT:
-      interval = 100; // 10 Гц
+      interval = 100;
       shouldToggle = (now - lastLedToggle >= interval);
       break;
     case LED_STATE_WIFI_OK:
-      interval = 500; // 2 Гц (полпериода)
+      interval = 500;
       shouldToggle = (now - lastLedToggle >= interval);
       break;
     case LED_STATE_SD_FAIL:
-      interval = 100; // 10 Гц (то же что init, но можно отличить)
+      interval = 100;
       shouldToggle = (now - lastLedToggle >= interval);
       break;
     case LED_STATE_OK:
-      // Горит постоянно
       digitalWrite(LED_PIN, LED_ON);
       return;
     case LED_STATE_UPLOADING:
-      interval = 50; // 20 Гц
+      interval = 50;
       shouldToggle = (now - lastLedToggle >= interval);
       break;
     default:
