@@ -57,8 +57,8 @@ void setup() {
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON);
-  // CS_SENSE: используем INPUT_PULLUP, как в оригинале
-  pinMode(CS_SENSE, INPUT_PULLUP);
+  // CS_SENSE: используем INPUT, так как на плате может быть внешняя подтяжка
+  pinMode(CS_SENSE, INPUT);
   Serial.print("CS_SENSE initial state: ");
   Serial.println(digitalRead(CS_SENSE) ? "HIGH" : "LOW");
 
@@ -194,10 +194,16 @@ bool readSetupIni(String &ssid, String &password) {
 // ==================== Инициализация SD ====================
 void initSD() {
   Serial.print("Initializing SD card...");
-  // Задержка для стабилизации питания
-  delay(500);
-
-  // Просто вызываем SD.begin, как в оригинальной прошивке ESPWebDAV
+  // Настраиваем CS пин
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  delay(100);
+  
+  // Явно инициализируем SPI
+  SPI.begin();
+  // Устанавливаем частоту для совместимости
+  SPI.setFrequency(4000000);
+  
   if (SD.begin(SD_CS)) {
     sdAvailable = true;
     Serial.println(" OK");
