@@ -58,7 +58,7 @@ void setup() {
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON); // выключаем светодиод
-  pinMode(CS_SENSE, INPUT_PULLDOWN); // активный HIGH при занятости Marlin
+  pinMode(CS_SENSE, INPUT); // активный HIGH при занятости Marlin (внешняя подтяжка)
 
   // Инициализация SD
   initSD();
@@ -265,7 +265,7 @@ void handleApiList() {
   dir.rewindDirectory();
   File entry;
   while ((entry = dir.openNextFile())) {
-    if (entry.name() == String("")) break;
+    if (strlen(entry.name()) == 0) break;
     JsonObject fileObj = files.createNestedObject();
     fileObj["name"] = entry.name();
     fileObj["size"] = entry.size();
@@ -478,7 +478,7 @@ void handleApiThumbnail() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  // Ищем миниатюру: заменяем расширение на .jpg, .jpeg, .png
+  // Ищем миниатюру: заменяем расширение на .jpg, .jpeg, .png, .gif
   String base = path;
   int dot = base.lastIndexOf('.');
   if (dot != -1) base = base.substring(0, dot);
@@ -594,7 +594,7 @@ void sendJsonError(int code, String message) {
 // ==================== Управление светодиодом ====================
 void updateLed() {
   unsigned long now = millis();
-  int interval;
+  unsigned long interval;
   bool shouldToggle = false;
 
   switch (currentLedState) {
