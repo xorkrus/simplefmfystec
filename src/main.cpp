@@ -57,7 +57,7 @@ void setup() {
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON);
-  // CS_SENSE: используем INPUT, так как на плате может быть внешняя подтяжка
+  // CS_SENSE: используем INPUT (подтяжка на плате)
   pinMode(CS_SENSE, INPUT);
   Serial.print("CS_SENSE initial state: ");
   Serial.println(digitalRead(CS_SENSE) ? "HIGH" : "LOW");
@@ -193,23 +193,41 @@ bool readSetupIni(String &ssid, String &password) {
 
 // ==================== Инициализация SD ====================
 void initSD() {
-  Serial.print("Initializing SD card...");
-  // Настраиваем CS пин
+  Serial.println("Initializing SD card...");
+  
+  // Сначала настраиваем CS
   pinMode(SD_CS, OUTPUT);
-  digitalWrite(SD_CS, HIGH);
-  delay(100);
+  digitalWrite(SD_CS, HIGH); // SD карта неактивна
   
-  // Явно инициализируем SPI
+  // Инициализируем SPI
   SPI.begin();
-  // Устанавливаем частоту для совместимости
-  SPI.setFrequency(4000000);
+  SPI.setFrequency(4000000); // 4 MHz
+  SPI.setDataMode(SPI_MODE0);
+  SPI.setBitOrder(MSBFIRST);
   
-  if (SD.begin(SD_CS)) {
+  // Пробуем несколько раз с паузами
+  bool initOk = false;
+  for (int attempt = 0; attempt < 5; attempt++) {
+    Serial.printf("Attempt %d: ", attempt + 1);
+    if (SD.begin(SD_CS)) {
+      initOk = true;
+      Serial.println("OK");
+      break;
+    } else {
+      Serial.println("failed");
+      delay(500);
+      // Сброс CS
+      digitalWrite(SD_CS, HIGH);
+      delay(100);
+    }
+  }
+
+  if (initOk) {
     sdAvailable = true;
-    Serial.println(" OK");
+    Serial.println("SD card initialized successfully.");
   } else {
     sdAvailable = false;
-    Serial.println(" FAILED");
+    Serial.println("SD card initialization FAILED.");
   }
 }
 
