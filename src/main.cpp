@@ -2,6 +2,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SD.h>
+#include <SPI.h>
 #include <ArduinoJson.h>
 #include "config.h"
 #include "html.h"
@@ -58,7 +59,9 @@ void setup() {
   // Настройка пинов
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, !LED_ON); // выключаем светодиод
-  pinMode(CS_SENSE, INPUT); // активный HIGH при занятости Marlin (внешняя подтяжка)
+  // CS_SENSE: активный LOW, когда Marlin занимает шину.
+  // Используем INPUT_PULLUP, чтобы в нормальном состоянии (шина свободна) пин был HIGH.
+  pinMode(CS_SENSE, INPUT_PULLUP);
 
   // Инициализация SD
   initSD();
@@ -193,6 +196,8 @@ bool readSetupIni(String &ssid, String &password) {
 // ==================== Инициализация SD ====================
 void initSD() {
   Serial.print("Initializing SD card...");
+  // Явно инициализируем SPI с нужными пинами (SCK=14, MISO=12, MOSI=13)
+  SPI.begin();
   if (!SD.begin(SD_CS)) {
     Serial.println(" FAILED");
     sdAvailable = false;
@@ -204,7 +209,8 @@ void initSD() {
 
 // Проверка занятости шины Marlin
 bool checkBusy() {
-  if (digitalRead(CS_SENSE) == HIGH) {
+  // Активный уровень LOW: если Marlin управляет шиной, пин притянут к земле.
+  if (digitalRead(CS_SENSE) == LOW) {
     Serial.println("SD bus busy (Marlin active)");
     return true;
   }
