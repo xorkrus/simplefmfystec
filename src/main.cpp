@@ -1,7 +1,7 @@
 // main.cpp
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include "config.h"
@@ -9,7 +9,8 @@
 
 // Глобальные объекты
 ESP8266WebServer server(HTTP_PORT);
-File uploadFile;
+SdFat sd;
+FsFile uploadFile;
 bool sdAvailable = false;
 String currentWifiStatus = "";
 unsigned long lastLedToggle = 0;
@@ -159,7 +160,7 @@ void startAP() {
 // Чтение SETUP.INI с SD
 bool readSetupIni(String &ssid, String &password) {
   if (!sdAvailable) return false;
-  File f = SD.open(SETUP_INI_FILENAME, FILE_READ);
+  FsFile f = sd.open(SETUP_INI_FILENAME, O_RDONLY);
   if (!f) {
     Serial.println("SETUP.INI not found");
     return false;
@@ -195,28 +196,28 @@ bool readSetupIni(String &ssid, String &password) {
 void initSD() {
   Serial.println("Initializing SD card...");
   
-  // Сначала настраиваем CS
+  // Настраиваем CS пин
   pinMode(SD_CS, OUTPUT);
-  digitalWrite(SD_CS, HIGH); // SD карта неактивна
+  digitalWrite(SD_CS, HIGH);
   
   // Инициализируем SPI
   SPI.begin();
-  SPI.setFrequency(4000000); // 4 MHz
+  SPI.setFrequency(4000000);
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
-  
-  // Пробуем несколько раз с паузами
+
+  // Пробуем разные скорости
   bool initOk = false;
-  for (int attempt = 0; attempt < 5; attempt++) {
-    Serial.printf("Attempt %d: ", attempt + 1);
-    if (SD.begin(SD_CS)) {
+  const uint32_t speeds[] = {SD_SCK_MHZ(4), SD_SCK_MHZ(2), SD_SCK_MHZ(1)};
+  for (int i = 0; i < 3 && !initOk; i++) {
+    Serial.printf("Attempt with %d MHz: ", 4 >> i);
+    if (sd.begin(SD_CS, speeds[i])) {
       initOk = true;
       Serial.println("OK");
       break;
     } else {
       Serial.println("failed");
-      delay(500);
-      // Сброс CS
+      delay(200);
       digitalWrite(SD_CS, HIGH);
       delay(100);
     }
@@ -253,8 +254,8 @@ void handleRoot() {
 
   // Проверяем наличие пользовательского index.html на SD
   String indexFile = isMobile ? "/index_m.html" : "/index.html";
-  if (sdAvailable && SD.exists(indexFile)) {
-    File f = SD.open(indexFile, FILE_READ);
+  if (sdAvailable && sd.exists(indexFile.c_str())) {
+    FsFile f = sd.open(indexFile, O_RDONLY);
     if (f) {
       server.streamFile(f, "text/html");
       f.close();
@@ -281,7 +282,7 @@ void handleApiList() {
   // Проверка безопасности пути
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  File dir = SD.open(path.c_str());
+  FsFile dir = sd.open(path.c_str(), O_RDONLY);
   if (!dir || !dir.isDirectory()) {
     sendJsonError(404, "Directory not found");
     if (dir) dir.close();
@@ -293,7 +294,7 @@ void handleApiList() {
   JsonArray files = doc.createNestedArray("files");
 
   dir.rewindDirectory();
-  File entry;
+  FsFile entry;
   while ((entry = dir.openNextFile())) {
     if (strlen(entry.name()) == 0) break;
     JsonObject fileObj = files.createNestedObject();
@@ -334,7 +335,7 @@ void handleFileUpload() {
       uploading = false;
       return;
     }
-    uploadFile = SD.open(fullPath.c_str(), FILE_WRITE);
+    uploadFile = sd.open(fullPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
     if (!uploadFile) {
       uploading = false;
       return;
@@ -359,12 +360,12 @@ void handleApiDownload() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  if (!SD.exists(path)) {
+  if (!sd.exists(path.c_str())) {
     sendJsonError(404, "File not found");
     return;
   }
 
-  File f = SD.open(path.c_str(), FILE_READ);
+  FsFile f = sd.open(path.c_str(), O_RDONLY);
   if (!f) {
     sendJsonError(500, "Cannot open file");
     return;
@@ -388,16 +389,16 @@ void handleApiDelete() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  if (!SD.exists(path)) { sendJsonError(404, "Path not found"); return; }
+  if (!sd.exists(path.c_str())) { sendJsonError(404, "Path not found"); return; }
 
   bool success;
-  File f = SD.open(path.c_str());
+  FsFile f = sd.open(path.c_str(), O_RDONLY);
   if (f.isDirectory()) {
     f.close();
     success = deleteRecursive(path);
   } else {
     f.close();
-    success = SD.remove(path.c_str());
+    success = sd.remove(path.c_str());
   }
 
   if (success) {
@@ -428,12 +429,12 @@ void handleApiRename() {
   if (parent != "/" && !parent.endsWith("/")) parent += "/";
   String newPath = parent + newName;
 
-  if (SD.exists(newPath)) {
+  if (sd.exists(newPath.c_str())) {
     sendJsonError(409, "Target already exists");
     return;
   }
 
-  if (SD.rename(path.c_str(), newPath.c_str())) {
+  if (sd.rename(path.c_str(), newPath.c_str())) {
     server.send(200, "application/json", "{\"success\":true}");
   } else {
     sendJsonError(500, "Rename failed");
@@ -456,20 +457,20 @@ void handleApiMove() {
     return;
   }
 
-  if (!SD.exists(source)) { sendJsonError(404, "Source not found"); return; }
-  if (SD.exists(destination)) { sendJsonError(409, "Destination already exists"); return; }
+  if (!sd.exists(source.c_str())) { sendJsonError(404, "Source not found"); return; }
+  if (sd.exists(destination.c_str())) { sendJsonError(409, "Destination already exists"); return; }
 
   String destParent = destination;
   int lastSlash = destParent.lastIndexOf('/');
   if (lastSlash > 0) {
     destParent = destParent.substring(0, lastSlash);
-    if (!SD.exists(destParent)) {
+    if (!sd.exists(destParent.c_str())) {
       sendJsonError(404, "Destination directory not found");
       return;
     }
   }
 
-  if (SD.rename(source.c_str(), destination.c_str())) {
+  if (sd.rename(source.c_str(), destination.c_str())) {
     server.send(200, "application/json", "{\"success\":true}");
   } else {
     sendJsonError(500, "Move failed");
@@ -488,9 +489,9 @@ void handleApiMkdir() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  if (SD.exists(path)) { sendJsonError(409, "Already exists"); return; }
+  if (sd.exists(path.c_str())) { sendJsonError(409, "Already exists"); return; }
 
-  if (SD.mkdir(path.c_str())) {
+  if (sd.mkdir(path.c_str())) {
     server.send(200, "application/json", "{\"success\":true}");
   } else {
     sendJsonError(500, "Mkdir failed");
@@ -510,8 +511,8 @@ void handleApiThumbnail() {
   if (dot != -1) base = base.substring(0, dot);
   String candidates[4] = {base + ".jpg", base + ".jpeg", base + ".png", base + ".gif"};
   for (int i = 0; i < 4; i++) {
-    if (SD.exists(candidates[i])) {
-      File f = SD.open(candidates[i].c_str(), FILE_READ);
+    if (sd.exists(candidates[i].c_str())) {
+      FsFile f = sd.open(candidates[i].c_str(), O_RDONLY);
       if (f) {
         String ct = getContentType(candidates[i]);
         server.streamFile(f, ct);
@@ -521,16 +522,16 @@ void handleApiThumbnail() {
     }
   }
 
-  if (SD.exists("/logo.jpg")) {
-    File f = SD.open("/logo.jpg", FILE_READ);
+  if (sd.exists("/logo.jpg")) {
+    FsFile f = sd.open("/logo.jpg", O_RDONLY);
     if (f) {
       server.streamFile(f, "image/jpeg");
       f.close();
       return;
     }
   }
-  if (SD.exists("/logo.png")) {
-    File f = SD.open("/logo.png", FILE_READ);
+  if (sd.exists("/logo.png")) {
+    FsFile f = sd.open("/logo.png", O_RDONLY);
     if (f) {
       server.streamFile(f, "image/png");
       f.close();
@@ -547,8 +548,8 @@ void handleNotFound() {
     String path = uri;
     path.replace("%20", " ");
     if (path.startsWith("/")) path = path.substring(1);
-    if (path.length() > 0 && SD.exists(path.c_str())) {
-      File f = SD.open(path.c_str(), FILE_READ);
+    if (path.length() > 0 && sd.exists(path.c_str())) {
+      FsFile f = sd.open(path.c_str(), O_RDONLY);
       if (f) {
         String ct = getContentType(path);
         server.streamFile(f, ct);
@@ -577,14 +578,14 @@ String getContentType(String filename) {
 }
 
 bool deleteRecursive(String path) {
-  File dir = SD.open(path.c_str());
+  FsFile dir = sd.open(path.c_str(), O_RDONLY);
   if (!dir.isDirectory()) {
     dir.close();
-    return SD.remove(path.c_str());
+    return sd.remove(path.c_str());
   }
 
   dir.rewindDirectory();
-  File entry;
+  FsFile entry;
   while ((entry = dir.openNextFile())) {
     String entryName = entry.name();
     if (entryName == "." || entryName == "..") {
@@ -601,7 +602,7 @@ bool deleteRecursive(String path) {
     }
   }
   dir.close();
-  return SD.rmdir(path.c_str());
+  return sd.rmdir(path.c_str());
 }
 
 void sendJsonError(int code, String message) {
