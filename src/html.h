@@ -2,62 +2,147 @@
 #ifndef HTML_H
 #define HTML_H
 
-// Встроенная fallback страница для desktop
 const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SD Card Manager</title>
+    <title>SD Manager</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 10px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-        .container { display: flex; flex: 1; gap: 10px; }
-        .file-manager { flex: 2; border: 1px solid #ccc; border-radius: 5px; padding: 10px; overflow-y: auto; }
-        .preview { flex: 1; border: 1px solid #ccc; border-radius: 5px; padding: 10px; display: flex; align-items: center; justify-content: center; }
-        .preview img { max-width: 100%; max-height: 100%; }
-        .toolbar { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
-        .toolbar button, .toolbar input[type=file] { padding: 5px 10px; }
-        ul { list-style: none; padding: 0; }
-        li { display: flex; align-items: center; padding: 5px; border-bottom: 1px solid #eee; cursor: pointer; }
-        li:hover { background: #f5f5f5; }
-        .icon { margin-right: 5px; }
-        .file-name { flex: 1; }
-        .file-size { margin-right: 10px; color: #666; }
+        :root {
+            --bg: #f4f4f4;
+            --text: #333;
+            --border: #ccc;
+            --hover: #e0e0e0;
+            --danger: #d9534f;
+            --primary: #0275d8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            padding: 10px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .toolbar button, .toolbar label {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        .toolbar button:hover { opacity: 0.9; }
+        .toolbar input[type="file"] { display: none; }
+        #currentPath {
+            background: white;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+        ul { list-style: none; }
+        li {
+            display: flex;
+            align-items: center;
+            padding: 6px 10px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            margin-bottom: 4px;
+            gap: 10px;
+        }
+        li:hover { background: var(--hover); }
+        .icon { font-size: 1.2rem; }
+        .name { flex: 1; word-break: break-all; }
+        .size { color: #666; font-size: 0.85rem; }
         .actions { display: flex; gap: 5px; }
-        .actions button { padding: 2px 5px; font-size: 0.8em; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; }
-        .modal-content { background: white; padding: 20px; border-radius: 5px; width: 300px; }
-        .modal input { width: 100%; padding: 5px; margin: 5px 0; box-sizing: border-box; }
-        .modal button { margin-top: 10px; }
-        #progress { display: none; margin-top: 10px; }
-        #progress-bar { height: 20px; background: #4CAF50; width: 0; }
+        .actions button {
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            padding: 2px 5px;
+            font-size: 0.9rem;
+        }
+        .actions .delete { color: var(--danger); }
+        .actions .test { color: var(--primary); }
+        #progress {
+            display: none;
+            margin-top: 10px;
+            background: #ddd;
+            border-radius: 10px;
+            height: 20px;
+            overflow: hidden;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0;
+            background: var(--primary);
+            transition: width 0.2s;
+        }
+        #network-info {
+            margin-top: 20px;
+            padding: 10px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            white-space: pre-line;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.4);
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            width: 90%;
+            max-width: 350px;
+        }
+        .modal input { width: 100%; padding: 8px; margin: 5px 0; }
+        .modal button { margin-top: 10px; margin-right: 5px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="file-manager">
-            <div class="toolbar">
-                <button onclick="goUp()">⬆️ Вверх</button>
-                <button onclick="refresh()">🔄 Обновить</button>
-                <button onclick="showMkdir()">📁 Создать папку</button>
-                <input type="file" id="fileInput" multiple onchange="uploadFiles()">
-                <label for="fileInput">📤 Загрузить файлы</label>
-                <button onclick="showRename()">✏️ Переименовать</button>
-                <button onclick="deleteSelected()">🗑 Удалить</button>
-            </div>
-            <div id="currentPath">/</div>
-            <ul id="fileList"></ul>
-            <div id="progress">
-                <div id="progress-bar"></div>
-            </div>
-        </div>
-        <div class="preview" id="preview">
-            <span>Выберите .gcode файл для предпросмотра</span>
-        </div>
+    <div class="toolbar">
+        <button onclick="goUp()">⬆️ Вверх</button>
+        <button onclick="refresh()">🔄 Обновить</button>
+        <button onclick="showMkdir()">📁 Папка</button>
+        <button onclick="showRename()">✏️ Переименовать</button>
+        <label for="fileInput">📁 Выбрать файлы</label>
+        <input type="file" id="fileInput" multiple>
+        <button onclick="uploadSelected()">⬆️ Загрузить выбранное</button>
     </div>
 
-    <!-- Модальное окно для ввода имени -->
+    <div id="currentPath">/</div>
+    <ul id="fileList"></ul>
+
+    <div id="progress">
+        <div id="progress-bar"></div>
+    </div>
+
+    <div id="network-info">Загрузка сетевых данных...</div>
+
+    <!-- Модальное окно -->
     <div class="modal" id="modal">
         <div class="modal-content">
             <h3 id="modalTitle"></h3>
@@ -71,6 +156,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         let currentPath = '/';
         let selectedFile = null;
         let modalCallback = null;
+        const fileInput = document.getElementById('fileInput');
 
         function refresh() {
             fetch('/api/list?path=' + encodeURIComponent(currentPath))
@@ -79,7 +165,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     currentPath = data.path;
                     document.getElementById('currentPath').textContent = currentPath;
                     renderFiles(data.files);
-                });
+                })
+                .catch(() => alert('Ошибка загрузки списка'));
         }
 
         function renderFiles(files) {
@@ -87,13 +174,23 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             list.innerHTML = '';
             files.forEach(file => {
                 const li = document.createElement('li');
-                li.onclick = () => selectFile(file);
                 const icon = file.isDir ? '📁' : '📄';
-                li.innerHTML = `<span class="icon">${icon}</span><span class="file-name">${file.name}</span><span class="file-size">${file.isDir ? '' : formatSize(file.size)}</span>`;
-                if (!file.isDir && file.name.endsWith('.gcode')) {
-                    li.style.cursor = 'pointer';
-                    li.addEventListener('click', () => showPreview(file.path));
-                }
+                li.innerHTML = `
+                    <span class="icon">${icon}</span>
+                    <span class="name">${file.name}</span>
+                    <span class="size">${file.isDir ? '' : formatSize(file.size)}</span>
+                    <span class="actions">
+                        <button class="test" title="Тест чтения" onclick="testRead('${file.path}')">⏱</button>
+                        <button class="delete" title="Удалить" onclick="deleteFile('${file.path}','${file.name}')">🗑</button>
+                    </span>
+                `;
+                li.onclick = (e) => {
+                    if (e.target.tagName !== 'BUTTON') {
+                        selectedFile = file;
+                        // выделение визуально
+                        li.style.background = '#d0e4ff';
+                    }
+                };
                 list.appendChild(li);
             });
         }
@@ -102,10 +199,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             if (bytes < 1024) return bytes + ' B';
             if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
             return (bytes/1024/1024).toFixed(1) + ' MB';
-        }
-
-        function selectFile(file) {
-            selectedFile = file;
         }
 
         function goUp() {
@@ -117,24 +210,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             refresh();
         }
 
-        function showPreview(path) {
-            const previewDiv = document.getElementById('preview');
-            fetch('/api/thumbnail?path=' + encodeURIComponent(path))
-                .then(r => {
-                    if (r.ok) {
-                        return r.blob().then(blob => {
-                            const url = URL.createObjectURL(blob);
-                            previewDiv.innerHTML = `<img src="${url}">`;
-                        });
-                    } else {
-                        previewDiv.innerHTML = '<span>Нет миниатюры</span>';
-                    }
-                });
-        }
-
-        function uploadFiles() {
-            const files = document.getElementById('fileInput').files;
-            if (!files.length) return;
+        function uploadSelected() {
+            const files = fileInput.files;
+            if (!files.length) {
+                alert('Выберите файлы для загрузки');
+                return;
+            }
             const progressDiv = document.getElementById('progress');
             const progressBar = document.getElementById('progress-bar');
             progressDiv.style.display = 'block';
@@ -145,6 +226,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             const uploadNext = (index) => {
                 if (index >= files.length) {
                     progressDiv.style.display = 'none';
+                    fileInput.value = '';
                     refresh();
                     return;
                 }
@@ -177,228 +259,24 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             uploadNext(0);
         }
 
-        function showMkdir() {
-            modalCallback = (name) => {
-                fetch('/api/mkdir', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({path: currentPath + '/' + name})
-                }).then(() => refresh());
-            };
-            document.getElementById('modalTitle').textContent = 'Название папки';
-            document.getElementById('modalInput').value = '';
-            document.getElementById('modal').style.display = 'flex';
-        }
-
-        function showRename() {
-            if (!selectedFile) { alert('Выберите файл или папку'); return; }
-            modalCallback = (newName) => {
-                fetch('/api/rename', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({path: selectedFile.path, newName: newName})
-                }).then(() => refresh());
-            };
-            document.getElementById('modalTitle').textContent = 'Новое имя';
-            document.getElementById('modalInput').value = selectedFile.name;
-            document.getElementById('modal').style.display = 'flex';
-        }
-
-        function deleteSelected() {
-            if (!selectedFile) { alert('Выберите файл или папку'); return; }
-            if (!confirm('Удалить ' + selectedFile.name + '?')) return;
-            fetch('/api/delete', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({path: selectedFile.path})
-            }).then(() => refresh());
-        }
-
-        function modalOk() {
-            const value = document.getElementById('modalInput').value.trim();
-            if (value && modalCallback) modalCallback(value);
-            document.getElementById('modal').style.display = 'none';
-        }
-
-        function modalCancel() {
-            document.getElementById('modal').style.display = 'none';
-        }
-
-        refresh();
-    </script>
-</body>
-</html>
-)rawliteral";
-
-// Встроенная fallback страница для mobile (адаптирована под вертикальное расположение)
-const char INDEX_M_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SD Card Manager Mobile</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 10px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-        .preview { height: 40vh; border: 1px solid #ccc; border-radius: 5px; padding: 10px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-        .preview img { max-width: 100%; max-height: 100%; }
-        .file-manager { flex: 1; border: 1px solid #ccc; border-radius: 5px; padding: 10px; overflow-y: auto; }
-        .toolbar { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
-        .toolbar button, .toolbar input[type=file] { padding: 5px 10px; }
-        ul { list-style: none; padding: 0; }
-        li { display: flex; align-items: center; padding: 5px; border-bottom: 1px solid #eee; cursor: pointer; }
-        li:hover { background: #f5f5f5; }
-        .icon { margin-right: 5px; }
-        .file-name { flex: 1; }
-        .file-size { margin-right: 10px; color: #666; }
-        .actions { display: flex; gap: 5px; }
-        .actions button { padding: 2px 5px; font-size: 0.8em; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; }
-        .modal-content { background: white; padding: 20px; border-radius: 5px; width: 90%; max-width: 300px; }
-        .modal input { width: 100%; padding: 5px; margin: 5px 0; box-sizing: border-box; }
-        .modal button { margin-top: 10px; }
-        #progress { display: none; margin-top: 10px; }
-        #progress-bar { height: 20px; background: #4CAF50; width: 0; }
-    </style>
-</head>
-<body>
-    <div class="preview" id="preview">
-        <span>Выберите .gcode файл</span>
-    </div>
-    <div class="file-manager">
-        <div class="toolbar">
-            <button onclick="goUp()">⬆️</button>
-            <button onclick="refresh()">🔄</button>
-            <button onclick="showMkdir()">📁</button>
-            <input type="file" id="fileInput" multiple onchange="uploadFiles()">
-            <label for="fileInput">📤</label>
-            <button onclick="showRename()">✏️</button>
-            <button onclick="deleteSelected()">🗑</button>
-        </div>
-        <div id="currentPath">/</div>
-        <ul id="fileList"></ul>
-        <div id="progress">
-            <div id="progress-bar"></div>
-        </div>
-    </div>
-
-    <div class="modal" id="modal">
-        <div class="modal-content">
-            <h3 id="modalTitle"></h3>
-            <input type="text" id="modalInput">
-            <button onclick="modalOk()">OK</button>
-            <button onclick="modalCancel()">Отмена</button>
-        </div>
-    </div>
-
-    <script>
-        // Аналогичный JS как в desktop версии, но адаптированный
-        let currentPath = '/';
-        let selectedFile = null;
-        let modalCallback = null;
-
-        function refresh() {
-            fetch('/api/list?path=' + encodeURIComponent(currentPath))
+        function testRead(path) {
+            fetch('/api/testread?path=' + encodeURIComponent(path))
                 .then(r => r.json())
                 .then(data => {
-                    currentPath = data.path;
-                    document.getElementById('currentPath').textContent = currentPath;
-                    renderFiles(data.files);
-                });
+                    alert(`Файл: ${path}\nРазмер: ${data.size} байт\nВремя чтения: ${data.time_ms} мс`);
+                })
+                .catch(() => alert('Ошибка теста чтения'));
         }
 
-        function renderFiles(files) {
-            const list = document.getElementById('fileList');
-            list.innerHTML = '';
-            files.forEach(file => {
-                const li = document.createElement('li');
-                li.onclick = () => selectFile(file);
-                const icon = file.isDir ? '📁' : '📄';
-                li.innerHTML = `<span class="icon">${icon}</span><span class="file-name">${file.name}</span><span class="file-size">${file.isDir ? '' : formatSize(file.size)}</span>`;
-                if (!file.isDir && file.name.endsWith('.gcode')) {
-                    li.addEventListener('click', () => showPreview(file.path));
-                }
-                list.appendChild(li);
-            });
-        }
-
-        function formatSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
-            return (bytes/1024/1024).toFixed(1) + ' MB';
-        }
-
-        function selectFile(file) {
-            selectedFile = file;
-        }
-
-        function goUp() {
-            if (currentPath === '/') return;
-            const parts = currentPath.split('/').filter(p => p);
-            parts.pop();
-            currentPath = '/' + parts.join('/');
-            if (currentPath === '') currentPath = '/';
-            refresh();
-        }
-
-        function showPreview(path) {
-            const previewDiv = document.getElementById('preview');
-            fetch('/api/thumbnail?path=' + encodeURIComponent(path))
-                .then(r => {
-                    if (r.ok) {
-                        return r.blob().then(blob => {
-                            const url = URL.createObjectURL(blob);
-                            previewDiv.innerHTML = `<img src="${url}">`;
-                        });
-                    } else {
-                        previewDiv.innerHTML = '<span>Нет миниатюры</span>';
-                    }
-                });
-        }
-
-        function uploadFiles() {
-            const files = document.getElementById('fileInput').files;
-            if (!files.length) return;
-            const progressDiv = document.getElementById('progress');
-            const progressBar = document.getElementById('progress-bar');
-            progressDiv.style.display = 'block';
-            progressBar.style.width = '0%';
-
-            let completed = 0;
-            const total = files.length;
-            const uploadNext = (index) => {
-                if (index >= files.length) {
-                    progressDiv.style.display = 'none';
-                    refresh();
-                    return;
-                }
-                const file = files[index];
-                const formData = new FormData();
-                formData.append('file', file);
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', '/api/upload?path=' + encodeURIComponent(currentPath), true);
-                xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable) {
-                        const percent = (completed + (e.loaded / e.total)) / total * 100;
-                        progressBar.style.width = percent + '%';
-                    }
-                };
-                xhr.onload = () => {
-                    if (xhr.status === 200) {
-                        completed++;
-                        uploadNext(index + 1);
-                    } else {
-                        alert('Ошибка загрузки');
-                        progressDiv.style.display = 'none';
-                    }
-                };
-                xhr.onerror = () => {
-                    alert('Ошибка сети');
-                    progressDiv.style.display = 'none';
-                };
-                xhr.send(formData);
-            };
-            uploadNext(0);
+        function deleteFile(path, name) {
+            if (!confirm(`Удалить ${name}?`)) return;
+            fetch('/api/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({path: path})
+            })
+            .then(() => refresh())
+            .catch(() => alert('Ошибка удаления'));
         }
 
         function showMkdir() {
@@ -428,16 +306,6 @@ const char INDEX_M_HTML[] PROGMEM = R"rawliteral(
             document.getElementById('modal').style.display = 'flex';
         }
 
-        function deleteSelected() {
-            if (!selectedFile) { alert('Выберите файл или папку'); return; }
-            if (!confirm('Удалить ' + selectedFile.name + '?')) return;
-            fetch('/api/delete', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({path: selectedFile.path})
-            }).then(() => refresh());
-        }
-
         function modalOk() {
             const value = document.getElementById('modalInput').value.trim();
             if (value && modalCallback) modalCallback(value);
@@ -448,7 +316,23 @@ const char INDEX_M_HTML[] PROGMEM = R"rawliteral(
             document.getElementById('modal').style.display = 'none';
         }
 
+        // Обновление сетевых данных
+        function refreshNetworkInfo() {
+            fetch('/api/networkinfo')
+                .then(r => r.json())
+                .then(data => {
+                    const div = document.getElementById('network-info');
+                    div.innerHTML = `IP: ${data.ip}\nDNS: ${data.dns}\nШлюз: ${data.gateway}\nRSSI: ${data.rssi} dBm\nКанал: ${data.link_speed}\nPing до роутера: ${data.ping_router} мс\nPing до клиента: ${data.ping_client} мс`;
+                })
+                .catch(() => {
+                    document.getElementById('network-info').textContent = 'Не удалось получить сетевые данные';
+                });
+        }
+
+        // Запуск
         refresh();
+        refreshNetworkInfo();
+        setInterval(refreshNetworkInfo, 10000); // обновление каждые 10 сек
     </script>
 </body>
 </html>
