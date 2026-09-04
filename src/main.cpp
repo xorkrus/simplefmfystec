@@ -261,21 +261,33 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
 */
 void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
     String name = downloadName.length() > 0 ? downloadName : getFileName(f);
-    server.sendHeader("Content-Type", contentType);
-    server.sendHeader("Content-Length", String(f.size()));
+    WiFiClient client = server.client();
+    if (!client || !f) return;
+
+    // Формируем HTTP-заголовки вручную
+    String headers = "HTTP/1.1 200 OK\r\n";
+    headers += "Content-Type: " + contentType + "\r\n";
+    headers += "Content-Length: " + String(f.size()) + "\r\n";
     if (downloadName.length() > 0) {
-        server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+        headers += "Content-Disposition: attachment; filename=\"" + name + "\"\r\n";
     }
-    server.sendHeader("Connection", "close");
-    server.send(200, contentType, "");   // можно заменить на server.sendContent("")
-    // Отправляем данные частями
+    headers += "Connection: close\r\n";
+    headers += "\r\n";
+
+    // Отправляем заголовки
+    client.write(headers.c_str(), headers.length());
+
+    // Передаём файл блоками
     const size_t bufSize = 8192;
     uint8_t buf[bufSize];
     size_t n;
     while ((n = f.read(buf, bufSize)) > 0) {
-        server.sendContent((const char*)buf, n);
+        client.write(buf, n);
+        // Опционально: ожидание освобождения буфера TCP
+        // while (client.availableForWrite() < 1024) delay(1);
     }
     f.close();
+    client.stop();
 }
 // ==================== Обработчики веб-сервера ====================
 void handleRoot() {
