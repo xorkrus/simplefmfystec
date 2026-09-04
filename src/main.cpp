@@ -552,7 +552,7 @@ void handleApiNetworkInfo() {
   IPAddress dns = WiFi.dnsIP();
   IPAddress gateway = WiFi.gatewayIP();
   int32_t rssi = WiFi.RSSI();
-  float linkSpeed = WiFi.channel(); // приблизительно, реальной скорости нет
+  //float linkSpeed = WiFi.channel(); // приблизительно, реальной скорости нет
 
   // Пинг до роутера (шлюза)
   //int pingRouter = -1;
@@ -572,7 +572,7 @@ void handleApiNetworkInfo() {
   doc["dns"] = dns.toString();
   doc["gateway"] = gateway.toString();
   doc["rssi"] = rssi;
-  doc["link_speed"] = WiFi.channel();
+  //doc["link_speed"] = WiFi.channel();
   //doc["ping_router"] = pingRouter;
   //doc["ping_client"] = pingClient;
 
