@@ -68,7 +68,8 @@ void setup() {
   }
 
   initWiFi();
-
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  
   server.on("/", handleRoot);
   server.on("/api/list", HTTP_GET, handleApiList);
   server.on("/api/upload", HTTP_POST, [](){ server.send(200, "application/json", "{\"success\":true}"); }, handleFileUpload);
@@ -192,13 +193,13 @@ void initSD() {
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   SPI.begin();
-  SPI.setFrequency(4000000);
+  //SPI.setFrequency(4000000);
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
 
   bool initOk = false;
-  const uint32_t speeds[] = {SD_SCK_MHZ(4), SD_SCK_MHZ(2), SD_SCK_MHZ(1)};
-  for (int i = 0; i < 3 && !initOk; i++) {
+  const uint32_t speeds[] = {SD_SCK_MHZ(16), SD_SCK_MHZ(8), SD_SCK_MHZ(4), SD_SCK_MHZ(2), SD_SCK_MHZ(1)};
+  for (int i = 0; i < 5 && !initOk; i++) {
     Serial.printf("Attempt with %d MHz: ", 4 >> i);
     if (sd.begin(SD_CS, speeds[i])) {
       initOk = true;
@@ -248,7 +249,7 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
   server.send(200, contentType, ""); // отправляет пустое тело? Лучше использовать client
   // Более надёжный способ — отправка через client
   WiFiClient client = server.client();
-  const size_t bufSize = 1024;
+  const size_t bufSize = 8192;
   uint8_t buf[bufSize];
   size_t n;
   while ((n = f.read(buf, bufSize)) > 0) {
