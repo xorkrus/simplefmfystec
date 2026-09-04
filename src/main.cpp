@@ -199,8 +199,8 @@ void initSD() {
 
   bool initOk = false;
   const uint32_t speeds[] = {SD_SCK_MHZ(16)};
-  for (int i = 0; i < 5 && !initOk; i++) {
-    Serial.printf("Attempt with %d MHz: ", 4 >> i);
+  for (int i = 0; i < 1 && !initOk; i++) {
+    Serial.printf("Attempt with 16 MHz: ");
     if (sd.begin(SD_CS, speeds[i])) {
       initOk = true;
       Serial.println("OK");
@@ -239,6 +239,7 @@ String getFileName(FsFile &f) {
   return "";
 }
 
+/*
 void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
   String name = downloadName.length() > 0 ? downloadName : getFileName(f);
   server.sendHeader("Content-Type", contentType);
@@ -249,7 +250,7 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
   server.send(200, contentType, ""); // отправляет пустое тело? Лучше использовать client
   // Более надёжный способ — отправка через client
   WiFiClient client = server.client();
-  const size_t bufSize = 8192;
+  const size_t bufSize = 16384;
   uint8_t buf[bufSize];
   size_t n;
   while ((n = f.read(buf, bufSize)) > 0) {
@@ -257,7 +258,25 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
   }
   f.close();
 }
-
+*/
+void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
+    String name = downloadName.length() > 0 ? downloadName : getFileName(f);
+    server.sendHeader("Content-Type", contentType);
+    server.sendHeader("Content-Length", String(f.size()));
+    if (downloadName.length() > 0) {
+        server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+    }
+    server.sendHeader("Connection", "close");
+    server.send(200, contentType, "");   // можно заменить на server.sendContent("")
+    // Отправляем данные частями
+    const size_t bufSize = 8192;
+    uint8_t buf[bufSize];
+    size_t n;
+    while ((n = f.read(buf, bufSize)) > 0) {
+        server.sendContent((const char*)buf, n);
+    }
+    f.close();
+}
 // ==================== Обработчики веб-сервера ====================
 void handleRoot() {
   if (checkBusy()) {
