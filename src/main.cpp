@@ -325,7 +325,6 @@ void handleApiList() {
   server.send(200, "application/json", response);
 }
 
-/*
   void handleFileUpload() {
   if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
   if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
@@ -358,75 +357,6 @@ void handleApiList() {
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (uploadFile) {
-      uploadFile.close();
-    }
-    uploading = false;
-  }
-}
-*/
-void handleFileUpload() {
-  if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
-  if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
-
-  HTTPUpload& upload = server.upload();
-
-  if (upload.status == UPLOAD_FILE_START) {
-    uploading = true;
-    String path = server.arg("path");
-    if (path.length() == 0) path = "/";
-    if (!path.endsWith("/")) path += "/";
-    String filename = upload.filename;
-    int slash = filename.lastIndexOf('/');
-    if (slash != -1) filename = filename.substring(slash + 1);
-    int backslash = filename.lastIndexOf('\\');
-    if (backslash != -1) filename = filename.substring(backslash + 1);
-    if (filename.length() == 0) filename = "unnamed";
-    String fullPath = path + filename;
-    if (fullPath.indexOf("..") != -1) {
-      uploading = false;
-      return;
-    }
-    uploadFile = sd.open(fullPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
-    if (!uploadFile) {
-      uploading = false;
-      return;
-    }
-    uploadBufferLen = 0;   // сброс буфера
-  } 
-  else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (!uploadFile) return;
-
-    size_t remaining = upload.currentSize;
-    size_t srcOffset = 0;
-    while (remaining > 0) {
-      size_t space = sizeof(uploadBuffer) - uploadBufferLen;
-      size_t copyLen = min(space, remaining);
-      memcpy(uploadBuffer + uploadBufferLen, upload.buf + srcOffset, copyLen);
-      uploadBufferLen += copyLen;
-      srcOffset += copyLen;
-      remaining -= copyLen;
-
-      // Если буфер заполнен, записываем его на SD
-      if (uploadBufferLen == sizeof(uploadBuffer)) {
-        size_t written = uploadFile.write(uploadBuffer, uploadBufferLen);
-        if (written != uploadBufferLen) {
-          // Ошибка записи
-          uploading = false;
-          uploadFile.close();
-          return;
-        }
-        uploadBufferLen = 0;
-      }
-    }
-    yield(); // даём поработать сетевому стеку
-  } 
-  else if (upload.status == UPLOAD_FILE_END) {
-    if (uploadFile) {
-      // Сброс остатков буфера
-      if (uploadBufferLen > 0) {
-        uploadFile.write(uploadBuffer, uploadBufferLen);
-        uploadBufferLen = 0;
-      }
       uploadFile.close();
     }
     uploading = false;
@@ -626,16 +556,16 @@ void handleApiNetworkInfo() {
 
   // Пинг до роутера (шлюза)
   int pingRouter = -1;
-  if (Ping.ping(gateway, 1)) {
-    pingRouter = Ping.averageTime();
-  }
+  //if (Ping.ping(gateway, 1)) {
+    //pingRouter = Ping.averageTime();
+  //}
 
   // Пинг до клиента (адрес запросившего)
-  IPAddress clientIP = server.client().remoteIP();
+  //IPAddress clientIP = server.client().remoteIP();
   int pingClient = -1;
-  if (Ping.ping(clientIP, 1)) {
-    pingClient = Ping.averageTime();
-  }
+  //if (Ping.ping(clientIP, 1)) {
+    //pingClient = Ping.averageTime();
+  //}
 
   DynamicJsonDocument doc(512);
   doc["ip"] = ip.toString();
@@ -643,8 +573,8 @@ void handleApiNetworkInfo() {
   doc["gateway"] = gateway.toString();
   doc["rssi"] = rssi;
   doc["link_speed"] = WiFi.channel();
-  doc["ping_router"] = pingRouter;
-  doc["ping_client"] = pingClient;
+  //doc["ping_router"] = pingRouter;
+  //doc["ping_client"] = pingClient;
 
   String response;
   serializeJson(doc, response);
