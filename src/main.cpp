@@ -4,6 +4,7 @@
 #include <SdFat.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
+#include <ESP8266Ping.h> // для пинга
 #include "config.h"
 #include "html.h"
 
@@ -31,7 +32,8 @@ void handleApiDelete();
 void handleApiRename();
 void handleApiMove();
 void handleApiMkdir();
-void handleApiThumbnail();
+void handleApiTestRead();
+void handleApiNetworkInfo();
 void handleNotFound();
 String getContentType(String filename);
 bool deleteRecursive(String path);
@@ -78,7 +80,8 @@ void setup() {
   server.on("/api/rename", HTTP_POST, handleApiRename);
   server.on("/api/move", HTTP_POST, handleApiMove);
   server.on("/api/mkdir", HTTP_POST, handleApiMkdir);
-  server.on("/api/thumbnail", HTTP_GET, handleApiThumbnail);
+  server.on("/api/testread", HTTP_GET, handleApiTestRead);
+  server.on("/api/networkinfo", HTTP_GET, handleApiNetworkInfo);
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -193,7 +196,6 @@ void initSD() {
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   SPI.begin();
-  //SPI.setFrequency(4000000);
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
 
@@ -239,32 +241,11 @@ String getFileName(FsFile &f) {
   return "";
 }
 
-/*
-void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
-  String name = downloadName.length() > 0 ? downloadName : getFileName(f);
-  server.sendHeader("Content-Type", contentType);
-  server.sendHeader("Content-Length", String(f.size()));
-  if (downloadName.length() > 0) {
-    server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
-  }
-  server.send(200, contentType, ""); // отправляет пустое тело? Лучше использовать client
-  // Более надёжный способ — отправка через client
-  WiFiClient client = server.client();
-  const size_t bufSize = 16384;
-  uint8_t buf[bufSize];
-  size_t n;
-  while ((n = f.read(buf, bufSize)) > 0) {
-    client.write(buf, n);
-  }
-  f.close();
-}
-*/
 void streamFsFile(FsFile &f, const String &contentType, const String &downloadName) {
     String name = downloadName.length() > 0 ? downloadName : getFileName(f);
     WiFiClient client = server.client();
     if (!client || !f) return;
 
-    // Формируем HTTP-заголовки вручную
     String headers = "HTTP/1.1 200 OK\r\n";
     headers += "Content-Type: " + contentType + "\r\n";
     headers += "Content-Length: " + String(f.size()) + "\r\n";
@@ -274,21 +255,18 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
     headers += "Connection: close\r\n";
     headers += "\r\n";
 
-    // Отправляем заголовки
     client.write(headers.c_str(), headers.length());
 
-    // Передаём файл блоками
     const size_t bufSize = 8192;
     uint8_t buf[bufSize];
     size_t n;
     while ((n = f.read(buf, bufSize)) > 0) {
         client.write(buf, n);
-        // Опционально: ожидание освобождения буфера TCP
-        // while (client.availableForWrite() < 1024) delay(1);
     }
     f.close();
     client.stop();
 }
+
 // ==================== Обработчики веб-сервера ====================
 void handleRoot() {
   if (checkBusy()) {
@@ -296,23 +274,7 @@ void handleRoot() {
     return;
   }
 
-  String userAgent = server.header("User-Agent");
-  bool isMobile = userAgent.indexOf("Mobile") != -1 || userAgent.indexOf("Android") != -1;
-
-  String indexFile = isMobile ? "/index_m.html" : "/index.html";
-  if (sdAvailable && sd.exists(indexFile.c_str())) {
-    FsFile f = sd.open(indexFile, O_RDONLY);
-    if (f) {
-      streamFsFile(f, "text/html");
-      return;
-    }
-  }
-
-  if (isMobile) {
-    server.send_P(200, "text/html", INDEX_M_HTML);
-  } else {
-    server.send_P(200, "text/html", INDEX_HTML);
-  }
+  server.send_P(200, "text/html", INDEX_HTML);
 }
 
 void handleApiList() {
@@ -542,7 +504,7 @@ void handleApiMkdir() {
   }
 }
 
-void handleApiThumbnail() {
+void handleApiTestRead() {
   if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
   if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
 
@@ -550,54 +512,73 @@ void handleApiThumbnail() {
   if (path.length() == 0) { sendJsonError(400, "Missing path"); return; }
   if (path.indexOf("..") != -1) { sendJsonError(400, "Invalid path"); return; }
 
-  String base = path;
-  int dot = base.lastIndexOf('.');
-  if (dot != -1) base = base.substring(0, dot);
-  String candidates[4] = {base + ".jpg", base + ".jpeg", base + ".png", base + ".gif"};
-  for (int i = 0; i < 4; i++) {
-    if (sd.exists(candidates[i].c_str())) {
-      FsFile f = sd.open(candidates[i].c_str(), O_RDONLY);
-      if (f) {
-        String ct = getContentType(candidates[i]);
-        streamFsFile(f, ct);
-        return;
-      }
-    }
+  if (!sd.exists(path.c_str())) {
+    sendJsonError(404, "File not found");
+    return;
   }
 
-  if (sd.exists("/logo.jpg")) {
-    FsFile f = sd.open("/logo.jpg", O_RDONLY);
-    if (f) {
-      streamFsFile(f, "image/jpeg");
-      return;
-    }
-  }
-  if (sd.exists("/logo.png")) {
-    FsFile f = sd.open("/logo.png", O_RDONLY);
-    if (f) {
-      streamFsFile(f, "image/png");
-      return;
-    }
+  FsFile f = sd.open(path.c_str(), O_RDONLY);
+  if (!f) {
+    sendJsonError(500, "Cannot open file");
+    return;
   }
 
-  server.send(404, "application/json", "{\"error\":\"No thumbnail\"}");
+  uint32_t start = micros();
+  const size_t bufSize = 512;
+  uint8_t buf[bufSize];
+  size_t total = 0;
+  while (f.read(buf, bufSize) > 0) {
+    total += bufSize;
+  }
+  uint32_t elapsed = micros() - start;
+  f.close();
+
+  DynamicJsonDocument doc(256);
+  doc["path"] = path;
+  doc["size"] = f.size();
+  doc["time_us"] = elapsed;
+  doc["time_ms"] = elapsed / 1000.0;
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleApiNetworkInfo() {
+  IPAddress ip = WiFi.localIP();
+  IPAddress dns = WiFi.dnsIP();
+  IPAddress gateway = WiFi.gatewayIP();
+  int32_t rssi = WiFi.RSSI();
+  float linkSpeed = WiFi.channel(); // приблизительно, реальной скорости нет
+
+  // Пинг до роутера (шлюза)
+  int pingRouter = -1;
+  if (Ping.ping(gateway, 1)) {
+    pingRouter = Ping.averageTime();
+  }
+
+  // Пинг до клиента (адрес запросившего)
+  IPAddress clientIP = server.client().remoteIP();
+  int pingClient = -1;
+  if (Ping.ping(clientIP, 1)) {
+    pingClient = Ping.averageTime();
+  }
+
+  DynamicJsonDocument doc(512);
+  doc["ip"] = ip.toString();
+  doc["dns"] = dns.toString();
+  doc["gateway"] = gateway.toString();
+  doc["rssi"] = rssi;
+  doc["link_speed"] = WiFi.channel();
+  doc["ping_router"] = pingRouter;
+  doc["ping_client"] = pingClient;
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
 }
 
 void handleNotFound() {
-  String uri = server.uri();
-  if (sdAvailable && !checkBusy()) {
-    String path = uri;
-    path.replace("%20", " ");
-    if (path.startsWith("/")) path = path.substring(1);
-    if (path.length() > 0 && sd.exists(path.c_str())) {
-      FsFile f = sd.open(path.c_str(), O_RDONLY);
-      if (f) {
-        String ct = getContentType(path);
-        streamFsFile(f, ct);
-        return;
-      }
-    }
-  }
+  // Убрано, чтобы не раздавать файлы напрямую
   server.send(404, "text/plain", "Not found");
 }
 
