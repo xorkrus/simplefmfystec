@@ -555,14 +555,14 @@ void handleApiNetworkInfo() {
   float linkSpeed = WiFi.channel(); // приблизительно, реальной скорости нет
 
   // Пинг до роутера (шлюза)
-  int pingRouter = -1;
+  //int pingRouter = -1;
   //if (Ping.ping(gateway, 1)) {
     //pingRouter = Ping.averageTime();
   //}
 
   // Пинг до клиента (адрес запросившего)
   //IPAddress clientIP = server.client().remoteIP();
-  int pingClient = -1;
+  //int pingClient = -1;
   //if (Ping.ping(clientIP, 1)) {
     //pingClient = Ping.averageTime();
   //}
