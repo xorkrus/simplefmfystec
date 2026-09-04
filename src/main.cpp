@@ -1,8 +1,5 @@
 // main.cpp
 #define HTTP_UPLOAD_BUFLEN 8192
-// Буфер для накопления данных при загрузке
-uint8_t uploadBuffer[16384];
-size_t uploadBufferLen = 0;
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SdFat.h>
@@ -11,6 +8,9 @@ size_t uploadBufferLen = 0;
 #include <ESP8266Ping.h> // для пинга
 #include "config.h"
 #include "html.h"
+// Буфер для накопления данных при загрузке
+uint8_t uploadBuffer[16384];
+size_t uploadBufferLen = 0;
 
 // Глобальные объекты
 ESP8266WebServer server(HTTP_PORT);
