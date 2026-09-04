@@ -198,7 +198,7 @@ void initSD() {
   SPI.setBitOrder(MSBFIRST);
 
   bool initOk = false;
-  const uint32_t speeds[] = {SD_SCK_MHZ(16), SD_SCK_MHZ(8), SD_SCK_MHZ(4), SD_SCK_MHZ(2), SD_SCK_MHZ(1)};
+  const uint32_t speeds[] = {SD_SCK_MHZ(16);
   for (int i = 0; i < 5 && !initOk; i++) {
     Serial.printf("Attempt with %d MHz: ", 4 >> i);
     if (sd.begin(SD_CS, speeds[i])) {
