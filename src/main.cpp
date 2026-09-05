@@ -1,5 +1,5 @@
 // main.cpp
-#define HTTP_UPLOAD_BUFLEN 8192
+#define HTTP_UPLOAD_BUFLEN 16384
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SdFat.h>
@@ -8,7 +8,7 @@
 #include "config.h"
 #include "html.h"
 // Буфер для накопления данных при загрузке
-uint8_t uploadBuffer[16384];
+uint8_t uploadBuffer[32768];
 size_t uploadBufferLen = 0;
 
 // Глобальные объекты
@@ -37,6 +37,7 @@ void handleApiMove();
 void handleApiMkdir();
 void handleApiTestRead();
 void handleNotFound();
+void handleApiTestWrite();
 String getContentType(String filename);
 bool deleteRecursive(String path);
 void sendJsonError(int code, String message);
@@ -83,6 +84,7 @@ void setup() {
   server.on("/api/move", HTTP_POST, handleApiMove);
   server.on("/api/mkdir", HTTP_POST, handleApiMkdir);
   server.on("/api/testread", HTTP_GET, handleApiTestRead);
+  server.on("/api/testwrite", HTTP_GET, handleApiTestWrite);
   server.onNotFound(handleNotFound);
 
   server.keepAlive(false);
@@ -607,6 +609,31 @@ void handleApiTestRead() {
   doc["path"] = path;
   doc["size"] = f.size();
   doc["time_us"] = elapsed;
+  doc["time_ms"] = elapsed / 1000.0;
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleApiTestWrite() {
+  if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
+  FsFile f = sd.open("/test_write.bin", O_WRONLY | O_CREAT | O_TRUNC);
+  if (!f) { sendJsonError(500, "Cannot open file"); return; }
+
+  uint8_t buf[512];
+  memset(buf, 0xAA, sizeof(buf));
+  uint32_t start = micros();
+  size_t totalWritten = 0;
+  for (int i = 0; i < 128; i++) {  // 128 * 512 = 65536 байт
+    f.write(buf, sizeof(buf));
+    totalWritten += sizeof(buf);
+  }
+  uint32_t elapsed = micros() - start;
+  f.close();
+  sd.remove("/test_write.bin");
+
+  DynamicJsonDocument doc(256);
+  doc["bytes"] = totalWritten;
   doc["time_ms"] = elapsed / 1000.0;
   String response;
   serializeJson(doc, response);
