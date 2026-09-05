@@ -316,19 +316,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             document.getElementById('modal').style.display = 'none';
         }
 
-        // Обновление сетевых данных
-        function refreshNetworkInfo() {
-            fetch('/api/networkinfo')
-                .then(r => r.json())
-                .then(data => {
-                    const div = document.getElementById('network-info');
-                    div.innerHTML = `IP: ${data.ip}\nDNS: ${data.dns}\nШлюз: ${data.gateway}\nRSSI: ${data.rssi} dBm\nКанал: ${data.link_speed}\nPing до роутера: ${data.ping_router} мс\nPing до клиента: ${data.ping_client} мс`;
-                })
-                .catch(() => {
-                    document.getElementById('network-info').textContent = 'Не удалось получить сетевые данные';
-                });
-        }
-
         // Запуск
         refresh();
         refreshNetworkInfo();
