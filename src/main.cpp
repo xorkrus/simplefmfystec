@@ -85,6 +85,7 @@ void setup() {
   server.on("/api/testread", HTTP_GET, handleApiTestRead);
   server.onNotFound(handleNotFound);
 
+  server.setKeepAlive(false);
   server.begin();
   Serial.println("HTTP server started");
   if (WiFi.getMode() == WIFI_STA) {
@@ -100,7 +101,10 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  yield();
   updateLed();
+  Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
+  delay(1000);
 }
 
 // ==================== Инициализация Wi-Fi ====================
@@ -269,6 +273,7 @@ void streamFsFile(FsFile &f, const String &contentType, const String &downloadNa
 }
 
 // ==================== Обработчики веб-сервера ====================
+/*
 void handleRoot() {
   if (checkBusy()) {
     server.send(503, "text/plain", "SD card busy");
@@ -277,7 +282,28 @@ void handleRoot() {
 
   server.send_P(200, "text/html", INDEX_HTML);
 }
+*/
+void handleRoot() {
+    if (checkBusy()) { server.send(503, "text/plain", "SD busy"); return; }
+    server.sendHeader("Content-Type", "text/html");
+    server.sendHeader("Cache-Control", "no-cache");
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/html", "");  // отправляем заголовки с пустым телом
 
+    const char* ptr = INDEX_HTML;
+    size_t len = strlen_P(ptr);
+    size_t chunkSize = 1024;
+    while (len > 0) {
+        size_t toSend = min(len, chunkSize);
+        char buf[chunkSize];
+        memcpy_P(buf, ptr, toSend);
+        server.sendContent(buf, toSend);
+        ptr += toSend;
+        len -= toSend;
+        yield();  // даём стеку обработать сетевые события
+    }
+    server.sendContent("");
+}
 void handleApiList() {
   if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
   if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
@@ -294,7 +320,7 @@ void handleApiList() {
     return;
   }
 
-  DynamicJsonDocument doc(8192);
+  DynamicJsonDocument doc(4096);
   doc["path"] = path;
   JsonArray files = doc.createNestedArray("files");
 
