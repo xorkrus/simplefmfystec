@@ -324,7 +324,7 @@ void handleApiList() {
   serializeJson(doc, response);
   server.send(200, "application/json", response);
 }
-
+/*
   void handleFileUpload() {
   if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
   if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
@@ -362,7 +362,73 @@ void handleApiList() {
     uploading = false;
   }
 }
+*/
+void handleFileUpload() {
+  if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
+  if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
 
+  HTTPUpload& upload = server.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    uploading = true;
+    String path = server.arg("path");
+    if (path.length() == 0) path = "/";
+    if (!path.endsWith("/")) path += "/";
+    String filename = upload.filename;
+    int slash = filename.lastIndexOf('/');
+    if (slash != -1) filename = filename.substring(slash + 1);
+    int backslash = filename.lastIndexOf('\\');
+    if (backslash != -1) filename = filename.substring(backslash + 1);
+    if (filename.length() == 0) filename = "unnamed";
+    String fullPath = path + filename;
+    if (fullPath.indexOf("..") != -1) {
+      uploading = false;
+      return;
+    }
+    uploadFile = sd.open(fullPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
+    if (!uploadFile) {
+      uploading = false;
+      return;
+    }
+    uploadBufferLen = 0;   // сброс буфера
+  } 
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!uploadFile) return;
+
+    size_t remaining = upload.currentSize;
+    size_t srcOffset = 0;
+    while (remaining > 0) {
+      size_t space = sizeof(uploadBuffer) - uploadBufferLen;
+      size_t copyLen = min(space, remaining);
+      memcpy(uploadBuffer + uploadBufferLen, upload.buf + srcOffset, copyLen);
+      uploadBufferLen += copyLen;
+      srcOffset += copyLen;
+      remaining -= copyLen;
+
+      // Если буфер заполнен — пишем на SD
+      if (uploadBufferLen == sizeof(uploadBuffer)) {
+        size_t written = uploadFile.write(uploadBuffer, uploadBufferLen);
+        if (written != uploadBufferLen) {
+          uploading = false;
+          uploadFile.close();
+          return;
+        }
+        uploadBufferLen = 0;
+      }
+    }
+    yield(); // даём сетевому стеку обработать данные
+  } 
+  else if (upload.status == UPLOAD_FILE_END) {
+    if (uploadFile) {
+      if (uploadBufferLen > 0) {
+        uploadFile.write(uploadBuffer, uploadBufferLen);
+        uploadBufferLen = 0;
+      }
+      uploadFile.close();
+    }
+    uploading = false;
+  }
+}
 void handleApiDownload() {
   if (checkBusy()) { sendJsonError(503, "SD busy"); return; }
   if (!sdAvailable) { sendJsonError(500, "SD not available"); return; }
