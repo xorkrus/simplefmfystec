@@ -85,7 +85,7 @@ void setup() {
   server.on("/api/testread", HTTP_GET, handleApiTestRead);
   server.onNotFound(handleNotFound);
 
-  server.KeepAlive(false);
+  server.keepAlive(false);
   server.begin();
   Serial.println("HTTP server started");
   if (WiFi.getMode() == WIFI_STA) {
