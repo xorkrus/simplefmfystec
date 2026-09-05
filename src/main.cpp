@@ -103,8 +103,6 @@ void loop() {
   server.handleClient();
   yield();
   updateLed();
-  Serial.printf("Free heap: %u\n\n", ESP.getFreeHeap());
-  delay(1000);
 }
 
 // ==================== Инициализация Wi-Fi ====================
