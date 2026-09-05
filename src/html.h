@@ -181,6 +181,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     <span class="size">${file.isDir ? '' : formatSize(file.size)}</span>
                     <span class="actions">
                         <button class="test" title="Тест чтения" onclick="testRead('${file.path}')">⏱</button>
+                        <button class="test" title="Тест записи" onclick="testWrite()">💾</button>
                         <button class="delete" title="Удалить" onclick="deleteFile('${file.path}','${file.name}')">🗑</button>
                     </span>
                 `;
@@ -266,6 +267,15 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     alert(`Файл: ${path}\nРазмер: ${data.size} байт\nВремя чтения: ${data.time_ms} мс`);
                 })
                 .catch(() => alert('Ошибка теста чтения'));
+        }
+
+        function testWrite() {
+            fetch('/api/testwrite')
+                .then(r => r.json())
+                .then(data => {
+                    alert(`Тест записи\nЗаписано: ${data.bytes} байт\nВремя: ${data.time_ms} мс`);
+                })
+                .catch(() => alert('Ошибка теста записи'));
         }
 
         function deleteFile(path, name) {
