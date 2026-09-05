@@ -1,5 +1,5 @@
 // main.cpp
-#define HTTP_UPLOAD_BUFLEN 4096 // Устанавливаем буфер в 4096 байт (кратно 512 байт для SD)
+#define HTTP_UPLOAD_BUFLEN 8192 // Устанавливаем буфер в 4096 байт (кратно 512 байт для SD)
 
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
