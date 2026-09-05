@@ -318,8 +318,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
         // Запуск
         refresh();
-        refreshNetworkInfo();
-        setInterval(refreshNetworkInfo, 10000); // обновление каждые 10 сек
     </script>
 </body>
 </html>
