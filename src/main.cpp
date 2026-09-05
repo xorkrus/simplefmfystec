@@ -5,7 +5,6 @@
 #include <SdFat.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
-#include <ESP8266Ping.h> // для пинга
 #include "config.h"
 #include "html.h"
 // Буфер для накопления данных при загрузке
@@ -37,7 +36,6 @@ void handleApiRename();
 void handleApiMove();
 void handleApiMkdir();
 void handleApiTestRead();
-void handleApiNetworkInfo();
 void handleNotFound();
 String getContentType(String filename);
 bool deleteRecursive(String path);
@@ -85,7 +83,6 @@ void setup() {
   server.on("/api/move", HTTP_POST, handleApiMove);
   server.on("/api/mkdir", HTTP_POST, handleApiMkdir);
   server.on("/api/testread", HTTP_GET, handleApiTestRead);
-  server.on("/api/networkinfo", HTTP_GET, handleApiNetworkInfo);
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -542,40 +539,6 @@ void handleApiTestRead() {
   doc["size"] = f.size();
   doc["time_us"] = elapsed;
   doc["time_ms"] = elapsed / 1000.0;
-  String response;
-  serializeJson(doc, response);
-  server.send(200, "application/json", response);
-}
-
-void handleApiNetworkInfo() {
-  IPAddress ip = WiFi.localIP();
-  IPAddress dns = WiFi.dnsIP();
-  IPAddress gateway = WiFi.gatewayIP();
-  int32_t rssi = WiFi.RSSI();
-  //float linkSpeed = WiFi.channel(); // приблизительно, реальной скорости нет
-
-  // Пинг до роутера (шлюза)
-  //int pingRouter = -1;
-  //if (Ping.ping(gateway, 1)) {
-    //pingRouter = Ping.averageTime();
-  //}
-
-  // Пинг до клиента (адрес запросившего)
-  //IPAddress clientIP = server.client().remoteIP();
-  //int pingClient = -1;
-  //if (Ping.ping(clientIP, 1)) {
-    //pingClient = Ping.averageTime();
-  //}
-
-  DynamicJsonDocument doc(512);
-  doc["ip"] = ip.toString();
-  doc["dns"] = dns.toString();
-  doc["gateway"] = gateway.toString();
-  doc["rssi"] = rssi;
-  //doc["link_speed"] = WiFi.channel();
-  //doc["ping_router"] = pingRouter;
-  //doc["ping_client"] = pingClient;
-
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response);
