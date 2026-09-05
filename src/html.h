@@ -317,7 +317,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         }
 
         // Запуск
-        refresh();
+        setTimeout(() => refresh(), 200);  // вместо простого refresh()
     </script>
 </body>
 </html>
